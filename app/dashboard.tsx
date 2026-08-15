@@ -17,8 +17,9 @@ type Bootstrap = {
 const actorId = "person_example";
 const apiBase = (process.env.NEXT_PUBLIC_RUNTIME_URL || "http://localhost:8080").replace(/\/$/, "");
 const seedMessages: Message[] = [
-  { id: "seed-1", role: "assistant", content: "좋은 아침이에요. 하나의 지속되는 Identity로 준비되어 있어요. 런타임을 연결하면 이 대화와 작업 상태가 PostgreSQL에 이어서 저장됩니다.", createdAt: new Date().toISOString() },
+  { id: "seed-1", role: "assistant", content: "좋은 아침이에요. 하나의 지속되는 Identity로 준비되어 있어요. 런타임을 연결하면 이 대화와 작업 상태가 PostgreSQL에 이어서 저장됩니다.", createdAt: "" },
 ];
+const previewEvent: RuntimeEvent = { id: "preview", type: "system.ready", timestamp: "", payload: {} };
 
 const eventCopy: Record<string, [string, string]> = {
   "system.ready": ["런타임 준비", "지속 Identity가 입력을 받을 준비를 마쳤습니다."],
@@ -35,10 +36,12 @@ function upsert<T extends { id: string }>(items: T[], item: T) {
 }
 
 function shortTime(value: string) {
+  if (!value) return "방금";
   return new Intl.DateTimeFormat("ko-KR", { hour: "numeric", minute: "2-digit" }).format(new Date(value));
 }
 
 function relativeTime(value: string) {
+  if (!value) return "방금";
   const seconds = Math.max(0, Math.round((Date.now() - new Date(value).getTime()) / 1000));
   if (seconds < 15) return "방금";
   if (seconds < 60) return `${seconds}초 전`;
@@ -119,7 +122,9 @@ export function Dashboard() {
     };
   }, [applyEvent]);
 
-  useEffect(() => scrollAnchor.current?.scrollIntoView({ behavior: "smooth" }), [messages, sending]);
+  useEffect(() => {
+    scrollAnchor.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages, sending]);
 
   async function sendMessage(event: FormEvent) {
     event.preventDefault();
@@ -252,7 +257,7 @@ export function Dashboard() {
         </section>
         <section className="timeline">
           <div className="section-heading"><span>활동 스트림</span><span className="activity-count">{events.length}</span></div>
-          {(visibleEvents.length ? visibleEvents : [{ id: "preview", type: "system.ready", timestamp: new Date().toISOString(), payload: {} }]).map((event) => {
+          {(visibleEvents.length ? visibleEvents : [previewEvent]).map((event) => {
             const copy = eventCopy[event.type] || [event.type, "정규화된 이벤트가 세계 상태에 반영됐습니다."];
             const tone = event.type.includes("completed") ? "done" : event.type.includes("chat") ? "memory" : "live";
             return <article className="timeline-item" key={event.id}><div className={`timeline-dot ${tone}`} /><div><time>{relativeTime(event.timestamp)}</time><h3>{copy[0]}</h3><p>{copy[1]}</p></div></article>;
