@@ -2,30 +2,21 @@ package llm
 
 import (
 	"context"
-	"os"
 	"strings"
 	"testing"
+
+	"github.com/quanyejun/quanyejun/runtime/internal/environment"
 )
 
 func TestCodexCLIUsesEphemeralReadOnlyExecution(t *testing.T) {
-	provider := NewCodexCLIProvider("codex", "test-model", "test")
-	provider.runner = func(_ context.Context, _ string, args []string, stdin, workDir string) ([]byte, []byte, error) {
-		joined := strings.Join(args, " ")
-		if !strings.Contains(joined, "--ephemeral") || !strings.Contains(joined, "--sandbox read-only") || !strings.Contains(stdin, "Do not inspect or modify files") {
-			t.Fatalf("unsafe invocation: args=%q prompt=%q", joined, stdin)
+	executionEnvironment := &fakeEnvironment{run: func(spec environment.RunSpec) (environment.RunResult, error) {
+		joined := strings.Join(spec.Args, " ")
+		if !spec.Isolated || !strings.Contains(joined, "--ephemeral") || !strings.Contains(joined, "--sandbox read-only") || !strings.Contains(spec.Stdin, "Do not inspect or modify files") {
+			t.Fatalf("unsafe invocation: args=%q prompt=%q", joined, spec.Stdin)
 		}
-		for index, arg := range args {
-			if arg == "--output-last-message" {
-				if err := os.WriteFile(args[index+1], []byte("Codex response"), 0o600); err != nil {
-					t.Fatal(err)
-				}
-			}
-		}
-		if workDir == "" {
-			t.Fatal("missing isolated work directory")
-		}
-		return nil, nil, nil
-	}
+		return environment.RunResult{Stdout: "Codex response"}, nil
+	}}
+	provider := NewCodexCLIProvider(executionEnvironment, "codex", "test-model", "test")
 
 	text, err := provider.Generate(context.Background(), sampleRequest())
 	if err != nil {
@@ -37,14 +28,14 @@ func TestCodexCLIUsesEphemeralReadOnlyExecution(t *testing.T) {
 }
 
 func TestClaudeCodeDisablesToolsAndPersistence(t *testing.T) {
-	provider := NewClaudeCodeProvider("claude", "sonnet", "test")
-	provider.runner = func(_ context.Context, _ string, args []string, _ string, _ string) ([]byte, []byte, error) {
-		joined := strings.Join(args, "|")
+	executionEnvironment := &fakeEnvironment{run: func(spec environment.RunSpec) (environment.RunResult, error) {
+		joined := strings.Join(spec.Args, "|")
 		if !strings.Contains(joined, "--no-session-persistence") || !strings.Contains(joined, "--safe-mode") || !strings.Contains(joined, "--tools||") {
 			t.Fatalf("unsafe invocation: %q", joined)
 		}
-		return []byte("Claude Code response"), nil, nil
-	}
+		return environment.RunResult{Stdout: "Claude Code response"}, nil
+	}}
+	provider := NewClaudeCodeProvider(executionEnvironment, "claude", "sonnet", "test")
 
 	text, err := provider.Generate(context.Background(), sampleRequest())
 	if err != nil {

@@ -7,19 +7,19 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"os/exec"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/quanyejun/quanyejun/runtime/internal/environment"
 )
 
 const defaultPriority = "local,claude-api,claude-code,openai-api,codex-cli,builtin"
 
 type DetectOptions struct {
-	Getenv     func(string) string
-	LookupPath func(string) (string, error)
-	Probe      func(context.Context, string, ...string) error
-	HTTPClient *http.Client
+	Getenv      func(string) string
+	Environment environment.Environment
+	HTTPClient  *http.Client
 }
 
 func DetectProvider(ctx context.Context, options DetectOptions) (Provider, error) {
@@ -80,17 +80,17 @@ func detectOne(ctx context.Context, id, source string, options DetectOptions) (P
 		maxTokens, _ := strconv.Atoi(getenv("ANTHROPIC_MAX_TOKENS"))
 		return NewAnthropicProvider(apiKey, model, firstValue(getenv("ANTHROPIC_BASE_URL"), "https://api.anthropic.com"), source+":credentials", maxTokens), true, ""
 	case "claude-code":
-		path, err := options.LookupPath(firstValue(getenv("CLAUDE_CODE_PATH"), "claude"))
+		path, err := options.Environment.LookPath(ctx, firstValue(getenv("CLAUDE_CODE_PATH"), "claude"))
 		if err != nil {
 			return nil, false, "claude executable not found"
 		}
-		if err := probeWithTimeout(ctx, options.Probe, path, "--version"); err != nil {
+		if err := probeWithTimeout(ctx, options.Environment, path, "--version"); err != nil {
 			return nil, false, "claude executable is not runnable"
 		}
-		if err := probeWithTimeout(ctx, options.Probe, path, "auth", "status"); err != nil {
+		if err := probeWithTimeout(ctx, options.Environment, path, "auth", "status"); err != nil {
 			return nil, false, "Claude Code is not authenticated"
 		}
-		return NewClaudeCodeProvider(path, getenv("CLAUDE_CODE_MODEL"), source+":cli"), true, ""
+		return NewClaudeCodeProvider(options.Environment, path, getenv("CLAUDE_CODE_MODEL"), source+":cli"), true, ""
 	case "openai-api":
 		apiKey := getenv("OPENAI_API_KEY")
 		model := firstValue(getenv("OPENAI_MODEL"), getenv("LLM_MODEL"))
@@ -99,17 +99,17 @@ func detectOne(ctx context.Context, id, source string, options DetectOptions) (P
 		}
 		return NewOpenAIProvider(apiKey, model, firstValue(getenv("OPENAI_BASE_URL"), "https://api.openai.com/v1"), source+":credentials"), true, ""
 	case "codex-cli":
-		path, err := options.LookupPath(firstValue(getenv("CODEX_CLI_PATH"), "codex"))
+		path, err := options.Environment.LookPath(ctx, firstValue(getenv("CODEX_CLI_PATH"), "codex"))
 		if err != nil {
 			return nil, false, "codex executable not found"
 		}
-		if err := probeWithTimeout(ctx, options.Probe, path, "--version"); err != nil {
+		if err := probeWithTimeout(ctx, options.Environment, path, "--version"); err != nil {
 			return nil, false, "codex executable is not runnable"
 		}
-		if err := probeWithTimeout(ctx, options.Probe, path, "login", "status"); err != nil {
+		if err := probeWithTimeout(ctx, options.Environment, path, "login", "status"); err != nil {
 			return nil, false, "Codex CLI is not authenticated"
 		}
-		return NewCodexCLIProvider(path, getenv("CODEX_MODEL"), source+":cli"), true, ""
+		return NewCodexCLIProvider(options.Environment, path, getenv("CODEX_MODEL"), source+":cli"), true, ""
 	case "builtin":
 		return NewBuiltinProvider(), true, ""
 	default:
@@ -121,13 +121,8 @@ func detectionDefaults(options DetectOptions) DetectOptions {
 	if options.Getenv == nil {
 		options.Getenv = os.Getenv
 	}
-	if options.LookupPath == nil {
-		options.LookupPath = exec.LookPath
-	}
-	if options.Probe == nil {
-		options.Probe = func(ctx context.Context, path string, args ...string) error {
-			return exec.CommandContext(ctx, path, args...).Run()
-		}
+	if options.Environment == nil {
+		options.Environment = environment.NewLocal(environment.ConfigFromEnvironment(options.Getenv))
 	}
 	if options.HTTPClient == nil {
 		options.HTTPClient = &http.Client{Timeout: 650 * time.Millisecond}
@@ -224,10 +219,11 @@ func getJSON(ctx context.Context, client *http.Client, address string, result an
 	return json.NewDecoder(response.Body).Decode(result) == nil
 }
 
-func probeWithTimeout(parent context.Context, probe func(context.Context, string, ...string) error, path string, args ...string) error {
+func probeWithTimeout(parent context.Context, executionEnvironment environment.Environment, path string, args ...string) error {
 	ctx, cancel := context.WithTimeout(parent, 2*time.Second)
 	defer cancel()
-	return probe(ctx, path, args...)
+	_, err := executionEnvironment.Run(ctx, environment.RunSpec{Command: path, Args: args, Isolated: true, Requires: []environment.Capability{environment.CanShell}})
+	return err
 }
 
 func normalizeOllamaBase(host string) string {

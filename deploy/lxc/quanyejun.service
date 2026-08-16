@@ -1,0 +1,24 @@
+[Unit]
+Description=QuanYejun persistent identity runtime
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=quanyejun
+Group=quanyejun
+WorkingDirectory=/var/lib/quanyejun/workspace
+EnvironmentFile=-/etc/quanyejun/config.env
+ExecStart=/usr/local/bin/quanyejun-runtime
+Restart=on-failure
+RestartSec=3
+UMask=0027
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/quanyejun /var/cache/quanyejun
+
+[Install]
+WantedBy=multi-user.target

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/quanyejun/quanyejun/runtime/internal/domain"
+	"github.com/quanyejun/quanyejun/runtime/internal/environment"
 	"github.com/quanyejun/quanyejun/runtime/internal/eventhub"
 	"github.com/quanyejun/quanyejun/runtime/internal/httpapi"
 	"github.com/quanyejun/quanyejun/runtime/internal/llm"
@@ -24,15 +25,17 @@ func main() {
 	dataStore := buildStore(ctx)
 	defer dataStore.Close()
 	hub := eventhub.New()
-	provider := buildProvider(ctx)
+	executionEnvironment := buildEnvironment(ctx)
+	provider := buildProvider(ctx, executionEnvironment)
 	runner := tasks.NewRunner(dataStore, hub)
 	origins := strings.Split(env("ALLOWED_ORIGINS", "http://localhost:3000"), ",")
 	displayName := domain.NormalizeDisplayName(os.Getenv("IDENTITY_DISPLAY_NAME"))
-	api := httpapi.New(dataStore, hub, provider, runner, origins, displayName)
+	api := httpapi.New(dataStore, hub, provider, runner, origins, displayName, executionEnvironment)
 	server := &http.Server{Addr: ":" + env("PORT", "8080"), Handler: api.Handler(), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 75 * time.Second}
 	go func() {
 		info := provider.Info()
-		slog.Info("QuanYejun runtime listening", "address", server.Addr, "displayName", displayName, "llmProvider", info.ID, "llmModel", info.Model, "providerSource", info.Source)
+		environmentInfo, _ := executionEnvironment.Inspect(ctx)
+		slog.Info("QuanYejun runtime listening", "address", server.Addr, "displayName", displayName, "environment", environmentInfo.Kind, "profile", environmentInfo.Profile, "llmProvider", info.ID, "llmModel", info.Model, "providerSource", info.Source)
 		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			slog.Error("runtime stopped", "error", err)
 			os.Exit(1)
@@ -62,8 +65,17 @@ func buildStore(ctx context.Context) store.Store {
 	slog.Info("persistent storage ready", "driver", "postgres")
 	return postgres
 }
-func buildProvider(ctx context.Context) llm.Provider {
-	provider, err := llm.DetectProvider(ctx, llm.DetectOptions{})
+func buildEnvironment(ctx context.Context) environment.Environment {
+	executionEnvironment := environment.NewLocal(environment.ConfigFromEnvironment(os.Getenv))
+	if err := executionEnvironment.Prepare(ctx); err != nil {
+		slog.Error("execution environment initialization failed", "error", err)
+		os.Exit(1)
+	}
+	return executionEnvironment
+}
+
+func buildProvider(ctx context.Context, executionEnvironment environment.Environment) llm.Provider {
+	provider, err := llm.DetectProvider(ctx, llm.DetectOptions{Environment: executionEnvironment})
 	if err != nil {
 		slog.Error("LLM provider detection failed", "error", err)
 		os.Exit(1)

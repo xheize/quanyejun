@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	"github.com/quanyejun/quanyejun/runtime/internal/domain"
+	"github.com/quanyejun/quanyejun/runtime/internal/environment"
 	"github.com/quanyejun/quanyejun/runtime/internal/eventhub"
 	"github.com/quanyejun/quanyejun/runtime/internal/llm"
 	"github.com/quanyejun/quanyejun/runtime/internal/store"
@@ -23,15 +24,16 @@ type Server struct {
 	provider       llm.Provider
 	runner         *tasks.Runner
 	displayName    string
+	environment    environment.Environment
 	allowedOrigins map[string]struct{}
 }
 
-func New(store store.Store, hub *eventhub.Hub, provider llm.Provider, runner *tasks.Runner, origins []string, displayName string) *Server {
+func New(store store.Store, hub *eventhub.Hub, provider llm.Provider, runner *tasks.Runner, origins []string, displayName string, executionEnvironment environment.Environment) *Server {
 	allowed := make(map[string]struct{}, len(origins))
 	for _, origin := range origins {
 		allowed[strings.TrimSpace(origin)] = struct{}{}
 	}
-	return &Server{store: store, hub: hub, provider: provider, runner: runner, displayName: domain.NormalizeDisplayName(displayName), allowedOrigins: allowed}
+	return &Server{store: store, hub: hub, provider: provider, runner: runner, displayName: domain.NormalizeDisplayName(displayName), environment: executionEnvironment, allowedOrigins: allowed}
 }
 
 func (s *Server) Handler() http.Handler {
@@ -39,6 +41,7 @@ func (s *Server) Handler() http.Handler {
 	router.Use(gin.Logger(), gin.Recovery(), s.cors())
 	router.GET("/healthz", s.health)
 	router.GET("/api/bootstrap", s.bootstrap)
+	router.GET("/api/environment", s.environmentInfo)
 	router.POST("/api/messages", s.createMessage)
 	router.POST("/api/tasks/demo", s.createDemoTask)
 	router.GET("/api/events", s.listEvents)
@@ -75,7 +78,21 @@ func (s *Server) originAllowed(origin string) bool {
 }
 
 func (s *Server) health(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"status": "ok", "identity": domain.IdentityID, "displayName": s.displayName, "llmProvider": s.provider.Name(), "provider": s.provider.Info()})
+	info, err := s.environment.Inspect(c.Request.Context())
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "ok", "identity": domain.IdentityID, "displayName": s.displayName, "environment": info, "llmProvider": s.provider.Name(), "provider": s.provider.Info()})
+}
+
+func (s *Server) environmentInfo(c *gin.Context) {
+	info, err := s.environment.Inspect(c.Request.Context())
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, info)
 }
 
 func (s *Server) bootstrap(c *gin.Context) {
@@ -106,7 +123,12 @@ func (s *Server) bootstrap(c *gin.Context) {
 		fail(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"identity": identity, "provider": s.provider.Info(), "messages": messages, "memories": memories, "tasks": tasksList, "events": events})
+	environmentInfo, err := s.environment.Inspect(c.Request.Context())
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"identity": identity, "environment": environmentInfo, "provider": s.provider.Info(), "messages": messages, "memories": memories, "tasks": tasksList, "events": events})
 }
 
 type messageInput struct {

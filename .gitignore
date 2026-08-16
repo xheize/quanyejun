@@ -43,3 +43,5 @@ yarn-error.log*
 
 # Go build artifacts
 /runtime/bin/
+/.runtime/
+/runtime/.runtime/

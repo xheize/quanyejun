@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/quanyejun/quanyejun/runtime/internal/environment"
 	"github.com/quanyejun/quanyejun/runtime/internal/eventhub"
 	"github.com/quanyejun/quanyejun/runtime/internal/llm"
 	"github.com/quanyejun/quanyejun/runtime/internal/store"
@@ -21,7 +22,7 @@ func TestMessageRoundTripAppearsInBootstrap(t *testing.T) {
 	dataStore := store.NewMemoryStore()
 	hub := eventhub.New()
 	provider := &recordingProvider{}
-	server := New(dataStore, hub, provider, tasks.NewRunner(dataStore, hub), []string{"http://localhost:3000"}, "루멘")
+	server := New(dataStore, hub, provider, tasks.NewRunner(dataStore, hub), []string{"http://localhost:3000"}, "루멘", newTestEnvironment(t))
 
 	body, _ := json.Marshal(map[string]string{"actorId": "person_example", "content": "이 문장을 기억해"})
 	request := httptest.NewRequest(http.MethodPost, "/api/messages", bytes.NewReader(body))
@@ -44,6 +45,10 @@ func TestMessageRoundTripAppearsInBootstrap(t *testing.T) {
 			ID   string `json:"id"`
 			Name string `json:"name"`
 		} `json:"identity"`
+		Environment struct {
+			Kind    string `json:"kind"`
+			Profile string `json:"profile"`
+		} `json:"environment"`
 		Messages []any `json:"messages"`
 		Memories []any `json:"memories"`
 		Events   []any `json:"events"`
@@ -56,6 +61,9 @@ func TestMessageRoundTripAppearsInBootstrap(t *testing.T) {
 	}
 	if payload.Identity.ID != "identity_quanyejun" || payload.Identity.Name != "루멘" {
 		t.Fatalf("identity = %#v", payload.Identity)
+	}
+	if payload.Environment.Kind != "local" || payload.Environment.Profile != "developer" {
+		t.Fatalf("environment = %#v", payload.Environment)
 	}
 	if provider.lastRequest.IdentityName != "루멘" {
 		t.Fatalf("provider identity name = %q", provider.lastRequest.IdentityName)
@@ -85,7 +93,7 @@ func (*recordingProvider) Info() llm.ProviderInfo {
 func TestRejectsEmptyMessage(t *testing.T) {
 	dataStore := store.NewMemoryStore()
 	hub := eventhub.New()
-	server := New(dataStore, hub, llm.NewLocalProvider(), tasks.NewRunner(dataStore, hub), []string{"*"}, "")
+	server := New(dataStore, hub, llm.NewLocalProvider(), tasks.NewRunner(dataStore, hub), []string{"*"}, "", newTestEnvironment(t))
 	request := httptest.NewRequest(http.MethodPost, "/api/messages", bytes.NewBufferString(`{"content":"  "}`))
 	request.Header.Set("Content-Type", "application/json")
 	response := httptest.NewRecorder()
@@ -98,7 +106,7 @@ func TestRejectsEmptyMessage(t *testing.T) {
 func TestWebSocketReceivesPersistedEvents(t *testing.T) {
 	dataStore := store.NewMemoryStore()
 	hub := eventhub.New()
-	server := New(dataStore, hub, llm.NewLocalProvider(), tasks.NewRunner(dataStore, hub), []string{"http://localhost:3000"}, "")
+	server := New(dataStore, hub, llm.NewLocalProvider(), tasks.NewRunner(dataStore, hub), []string{"http://localhost:3000"}, "", newTestEnvironment(t))
 	httpServer := httptest.NewServer(server.Handler())
 	defer httpServer.Close()
 
@@ -131,4 +139,19 @@ func TestWebSocketReceivesPersistedEvents(t *testing.T) {
 	if event.Type != "chat.message" {
 		t.Fatalf("event type = %q", event.Type)
 	}
+}
+
+func newTestEnvironment(t *testing.T) environment.Environment {
+	t.Helper()
+	root := t.TempDir()
+	executionEnvironment := environment.NewLocal(environment.ConfigFromEnvironment(func(key string) string {
+		if key == "QUANYEJUN_RUNTIME_ROOT" {
+			return root
+		}
+		return ""
+	}))
+	if err := executionEnvironment.Prepare(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	return executionEnvironment
 }

@@ -12,6 +12,7 @@ LLM을 정체성 자체가 아닌 **교체 가능한 추론 엔진**으로 사�
 - PostgreSQL 기반 대화, 기억, 작업, 이벤트 영속화
 - 최근 대화 10개와 관련 기억 5개만 사용하는 짧은 LLM 문맥
 - 로컬 LLM, Claude API/Code, OpenAI API, Codex CLI를 자동 선택하는 LLM 인터페이스
+- 영속 디렉터리·도구 탐색·권한을 제공하는 교체 가능한 실행 환경 인터페이스
 - 연결이 끊겨도 계속 실행되는 데모 비동기 작업
 - PostgreSQL이 없을 때 빠른 미리보기를 위한 비영속 메모리 저장소
 
@@ -21,7 +22,8 @@ LLM을 정체성 자체가 아닌 **교체 가능한 추론 엔진**으로 사�
 app/                웹 UI
 runtime/            Go 런타임
   cmd/server/       실행 진입점
-  internal/         domain, store, llm, event hub, tasks, HTTP/WebSocket
+  internal/         domain, environment, store, llm, event hub, tasks, HTTP/WebSocket
+deploy/lxc/         LXC 게스트용 systemd 배포 어댑터
 migrations/         PostgreSQL 초기 스키마
 docs/architecture/  설계와 MVP 경계
 ```
@@ -63,6 +65,27 @@ go run ./cmd/server
 ```
 
 표기명을 바꿔도 같은 내부 Identity를 사용하므로 기존 대화와 기억은 그대로 이어집니다. 빈 값은 기본 이름 `QuanYejun`으로 처리하고, 앞뒤·연속 공백을 정리하며 최대 40자로 제한합니다.
+
+## 실행 환경
+
+Identity 코어는 LXC, Docker, Kubernetes API를 직접 호출하지 않습니다. 대신 `Environment` 인터페이스를 통해 영속 `home`, `workspace`, `config`, `cache`, 셸 실행, 도구 탐색을 사용합니다. 현재 구현은 같은 OS에서 실행하는 `local` 어댑터이며, LXC 안에서 실행할 때도 동일한 코드를 쓰고 환경 변수로 `kind=lxc`와 영속 경로를 지정합니다.
+
+도구의 설치 여부인 capability와 실제 사용 허가인 authority는 분리되어 있습니다. `QUANYEJUN_ENVIRONMENT_ALLOW`에 명시된 capability만 실행 경계가 허용합니다. 현재 API는 임의 셸 명령을 외부에 노출하지 않으며, CLI 기반 추론 엔진만 격리된 임시 작업 디렉터리에서 이 경계를 사용합니다.
+
+현재 환경은 `GET /api/environment`에서 확인할 수 있습니다. 기본 로컬 경로는 `.runtime/` 아래에 생성되며 저장소에는 커밋되지 않습니다.
+
+### LXC 게스트에 설치
+
+LXC는 오케스트레이션 대상이 아니라 첫 서버 실행 어댑터로 취급합니다. Linux용 바이너리를 빌드한 뒤 LXC 게스트 안에서 설치 스크립트를 실행합니다.
+
+```bash
+cd runtime
+GOOS=linux GOARCH=amd64 go build -o ../dist/quanyejun-runtime ./cmd/server
+cd ..
+sudo ./deploy/lxc/install.sh ./dist/quanyejun-runtime
+```
+
+설치기는 전용 사용자, 영속 디렉터리, `/etc/quanyejun/config.env`, systemd 서비스를 준비합니다. 실제 DB URL과 LLM 키는 게스트의 설정 파일에만 추가하세요. Docker와 Kubernetes는 코어 변경 없이 이후 별도 배포 어댑터로 추가할 수 있습니다.
 
 ## 추론 엔진 자동 감지
 
@@ -139,6 +162,7 @@ go test ./...
 | --- | --- |
 | `GET /healthz` | 런타임과 현재 LLM 제공자 확인 |
 | `GET /api/bootstrap` | Identity, 최근 대화, 기억, 작업, 이벤트 로드 |
+| `GET /api/environment` | 실행 환경, capability, authority, 도구 상태 확인 |
 | `POST /api/messages` | 대화 입력 및 Parent LLM 호출 |
 | `POST /api/tasks/demo` | 연결 독립적인 비동기 작업 시작 |
 | `GET /api/events?after=` | 커서 이후 이벤트 조회 |

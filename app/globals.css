@@ -66,7 +66,9 @@ a { color: inherit; text-decoration: none; }
 .identity-card dl div { display: flex; justify-content: space-between; align-items: baseline; border-top: 1px solid #dddeda; padding-top: 9px; }
 .identity-card dt { font-size: 10px; color: var(--muted); }
 .identity-card dd { margin: 0; font: 700 13px/1 Georgia, serif; }
-.model-label { margin: 14px 0 0; text-align: center; color: #9a9c95; font-size: 9px; }
+.model-label, .environment-label { text-align: center; color: #9a9c95; font-size: 9px; }
+.model-label { margin: 14px 0 0; }
+.environment-label { margin: 4px 0 0; }
 
 .conversation { min-height: 100vh; display: grid; grid-template-rows: auto 1fr auto; background: var(--white); }
 .conversation-header { height: 93px; padding: 24px 34px 20px; border-bottom: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; }
@@ -158,7 +160,7 @@ a { color: inherit; text-decoration: none; }
   .brand-mark { width: 39px; height: 39px; border-radius: 10px; box-shadow: 3px 3px 0 var(--lime); }
   .identity-copy { margin: 0 0 0 16px; }.identity-copy h1 { font-size: 19px; margin: 2px 0; }.identity-copy .eyebrow { display: none; }
   .primary-nav { margin: 0 0 0 auto; display: flex; }.nav-item { display: none; }.nav-item.active { display: flex; padding: 9px; }.nav-item.active small { display: none; }
-  .identity-card, .model-label { display: none; }
+  .identity-card, .model-label, .environment-label { display: none; }
   .conversation { min-height: calc(100vh - 76px); }
   .conversation-header { height: 74px; padding: 16px 20px; }.conversation-header h2 { font-size: 16px; }
   .task-launch { padding: 8px; font-size: 9px; }

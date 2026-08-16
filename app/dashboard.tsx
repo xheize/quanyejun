@@ -7,8 +7,18 @@ type RuntimeTask = { id: string; title: string; status: string; progress: number
 type Memory = { id: string; content: string; createdAt: string };
 type RuntimeEvent = { id: string; type: string; timestamp: string; payload: Record<string, unknown> };
 type ProviderInfo = { id: string; label: string; model?: string; source: string };
+type EnvironmentInfo = {
+  kind: string;
+  profile: string;
+  os: string;
+  arch: string;
+  capabilities: string[];
+  authority: { mode: string; granted: string[] };
+  tools: { name: string; path?: string; available: boolean }[];
+};
 type Bootstrap = {
   identity: { id: string; name: string; status: string };
+  environment: EnvironmentInfo;
   provider: ProviderInfo;
   messages: Message[];
   memories: Memory[];
@@ -23,6 +33,7 @@ const seedMessages: Message[] = [
 ];
 const previewEvent: RuntimeEvent = { id: "preview", type: "system.ready", timestamp: "", payload: {} };
 const previewProvider: ProviderInfo = { id: "builtin", label: "Built-in preview", source: "fallback" };
+const previewEnvironment: EnvironmentInfo = { kind: "local", profile: "preview", os: "unknown", arch: "unknown", capabilities: [], authority: { mode: "internal-only", granted: [] }, tools: [] };
 
 const eventCopy: Record<string, [string, string]> = {
   "system.ready": ["런타임 준비", "지속 Identity가 입력을 받을 준비를 마쳤습니다."],
@@ -59,6 +70,7 @@ export function Dashboard() {
   const [memories, setMemories] = useState<Memory[]>([]);
   const [events, setEvents] = useState<RuntimeEvent[]>([]);
   const [provider, setProvider] = useState<ProviderInfo>(previewProvider);
+  const [environment, setEnvironment] = useState<EnvironmentInfo>(previewEnvironment);
   const [connection, setConnection] = useState<"connecting" | "online" | "offline">("connecting");
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
@@ -92,6 +104,7 @@ export function Dashboard() {
         setMemories(data.memories || []);
         setEvents(data.events || []);
         setProvider(data.provider || previewProvider);
+        setEnvironment(data.environment || previewEnvironment);
         lastEventId.current = data.events.at(-1)?.id || "";
         connect();
       } catch {
@@ -185,6 +198,7 @@ export function Dashboard() {
   const latestMemory = memories.at(-1)?.content || "대화에서 오래 남길 가치가 있는 사실을 발견하면 여기에 기억합니다.";
   const visibleEvents = useMemo(() => [...events].reverse().slice(0, 4), [events]);
   const identityInitial = Array.from(identityName.trim())[0] || "Q";
+  const availableTools = environment.tools.filter((tool) => tool.available).length;
 
   return (
     <main className="shell">
@@ -205,10 +219,12 @@ export function Dashboard() {
           <dl>
             <div><dt>기억</dt><dd>{memories.length}</dd></div>
             <div><dt>진행 작업</dt><dd>{tasks.filter((task) => task.status === "running").length}</dd></div>
+            <div><dt>실행 환경</dt><dd>{environment.kind} · {environment.profile}</dd></div>
             <div><dt>마지막 활동</dt><dd>{events.length ? relativeTime(events.at(-1)!.timestamp) : "대기"}</dd></div>
           </dl>
         </section>
         <p className="model-label" title={provider.source}>Reasoning engine · {provider.label}{provider.model ? ` · ${provider.model}` : ""}</p>
+        <p className="environment-label" title={`${environment.os}/${environment.arch} · authority ${environment.authority.mode}`}>Environment · {availableTools} tools</p>
       </aside>
 
       <section className="conversation" id="conversation">

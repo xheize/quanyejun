@@ -6,7 +6,33 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/quanyejun/quanyejun/runtime/internal/environment"
 )
+
+type fakeEnvironment struct {
+	paths map[string]string
+	run   func(environment.RunSpec) (environment.RunResult, error)
+	runs  []environment.RunSpec
+}
+
+func (*fakeEnvironment) Prepare(context.Context) error { return nil }
+func (*fakeEnvironment) Inspect(context.Context) (environment.Info, error) {
+	return environment.Info{Kind: "test"}, nil
+}
+func (f *fakeEnvironment) LookPath(_ context.Context, name string) (string, error) {
+	if path, ok := f.paths[name]; ok {
+		return path, nil
+	}
+	return "", errors.New("missing")
+}
+func (f *fakeEnvironment) Run(_ context.Context, spec environment.RunSpec) (environment.RunResult, error) {
+	f.runs = append(f.runs, spec)
+	if f.run != nil {
+		return f.run(spec)
+	}
+	return environment.RunResult{}, nil
+}
 
 func TestDetectsExplicitOpenAIAPI(t *testing.T) {
 	values := map[string]string{
@@ -42,35 +68,26 @@ func TestAutoPriorityIsConfigurable(t *testing.T) {
 
 func TestCodexCLIRequiresRunnableAuthenticatedCommand(t *testing.T) {
 	values := map[string]string{"LLM_PROVIDER": "codex-cli", "CODEX_MODEL": "test-codex"}
-	var probes [][]string
+	executionEnvironment := &fakeEnvironment{paths: map[string]string{"codex": "C:/tools/codex.exe"}}
 	provider, err := DetectProvider(context.Background(), DetectOptions{
-		Getenv: mapEnv(values),
-		LookupPath: func(name string) (string, error) {
-			if name != "codex" {
-				t.Fatalf("lookup = %q", name)
-			}
-			return "C:/tools/codex.exe", nil
-		},
-		Probe: func(_ context.Context, _ string, args ...string) error {
-			probes = append(probes, append([]string(nil), args...))
-			return nil
-		},
+		Getenv:      mapEnv(values),
+		Environment: executionEnvironment,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if provider.Name() != "codex-cli" || len(probes) != 2 {
-		t.Fatalf("provider = %q, probes = %#v", provider.Name(), probes)
+	if provider.Name() != "codex-cli" || len(executionEnvironment.runs) != 2 {
+		t.Fatalf("provider = %q, probes = %#v", provider.Name(), executionEnvironment.runs)
 	}
-	if probes[1][0] != "login" || probes[1][1] != "status" {
-		t.Fatalf("auth probe = %#v", probes[1])
+	if args := executionEnvironment.runs[1].Args; args[0] != "login" || args[1] != "status" {
+		t.Fatalf("auth probe = %#v", args)
 	}
 }
 
 func TestExplicitUnavailableProviderReturnsUsefulError(t *testing.T) {
 	_, err := DetectProvider(context.Background(), DetectOptions{
-		Getenv:     mapEnv(map[string]string{"LLM_PROVIDER": "claude-code"}),
-		LookupPath: func(string) (string, error) { return "", errors.New("missing") },
+		Getenv:      mapEnv(map[string]string{"LLM_PROVIDER": "claude-code"}),
+		Environment: &fakeEnvironment{},
 	})
 	if err == nil {
 		t.Fatal("expected detection error")
