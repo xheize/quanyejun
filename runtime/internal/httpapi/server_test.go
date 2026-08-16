@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -19,7 +20,8 @@ import (
 func TestMessageRoundTripAppearsInBootstrap(t *testing.T) {
 	dataStore := store.NewMemoryStore()
 	hub := eventhub.New()
-	server := New(dataStore, hub, llm.NewLocalProvider(), tasks.NewRunner(dataStore, hub), []string{"http://localhost:3000"})
+	provider := &recordingProvider{}
+	server := New(dataStore, hub, provider, tasks.NewRunner(dataStore, hub), []string{"http://localhost:3000"}, "루멘")
 
 	body, _ := json.Marshal(map[string]string{"actorId": "person_example", "content": "이 문장을 기억해"})
 	request := httptest.NewRequest(http.MethodPost, "/api/messages", bytes.NewReader(body))
@@ -38,6 +40,10 @@ func TestMessageRoundTripAppearsInBootstrap(t *testing.T) {
 	}
 
 	var payload struct {
+		Identity struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		} `json:"identity"`
 		Messages []any `json:"messages"`
 		Memories []any `json:"memories"`
 		Events   []any `json:"events"`
@@ -48,6 +54,12 @@ func TestMessageRoundTripAppearsInBootstrap(t *testing.T) {
 	if len(payload.Messages) != 2 {
 		t.Fatalf("messages = %d, want 2", len(payload.Messages))
 	}
+	if payload.Identity.ID != "identity_quanyejun" || payload.Identity.Name != "루멘" {
+		t.Fatalf("identity = %#v", payload.Identity)
+	}
+	if provider.lastRequest.IdentityName != "루멘" {
+		t.Fatalf("provider identity name = %q", provider.lastRequest.IdentityName)
+	}
 	if len(payload.Memories) != 2 {
 		t.Fatalf("memories = %d, want 2", len(payload.Memories))
 	}
@@ -56,10 +68,24 @@ func TestMessageRoundTripAppearsInBootstrap(t *testing.T) {
 	}
 }
 
+type recordingProvider struct {
+	lastRequest llm.Request
+}
+
+func (p *recordingProvider) Generate(_ context.Context, request llm.Request) (string, error) {
+	p.lastRequest = request
+	return "recorded", nil
+}
+
+func (*recordingProvider) Name() string { return "recording" }
+func (*recordingProvider) Info() llm.ProviderInfo {
+	return llm.ProviderInfo{ID: "recording", Label: "Recording", Source: "test"}
+}
+
 func TestRejectsEmptyMessage(t *testing.T) {
 	dataStore := store.NewMemoryStore()
 	hub := eventhub.New()
-	server := New(dataStore, hub, llm.NewLocalProvider(), tasks.NewRunner(dataStore, hub), []string{"*"})
+	server := New(dataStore, hub, llm.NewLocalProvider(), tasks.NewRunner(dataStore, hub), []string{"*"}, "")
 	request := httptest.NewRequest(http.MethodPost, "/api/messages", bytes.NewBufferString(`{"content":"  "}`))
 	request.Header.Set("Content-Type", "application/json")
 	response := httptest.NewRecorder()
@@ -72,7 +98,7 @@ func TestRejectsEmptyMessage(t *testing.T) {
 func TestWebSocketReceivesPersistedEvents(t *testing.T) {
 	dataStore := store.NewMemoryStore()
 	hub := eventhub.New()
-	server := New(dataStore, hub, llm.NewLocalProvider(), tasks.NewRunner(dataStore, hub), []string{"http://localhost:3000"})
+	server := New(dataStore, hub, llm.NewLocalProvider(), tasks.NewRunner(dataStore, hub), []string{"http://localhost:3000"}, "")
 	httpServer := httptest.NewServer(server.Handler())
 	defer httpServer.Close()
 

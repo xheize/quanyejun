@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/quanyejun/quanyejun/runtime/internal/domain"
@@ -24,6 +25,9 @@ func TestOpenAIProviderUsesResponsesAPI(t *testing.T) {
 		}
 		if body["model"] != "test-model" || body["instructions"] == "" {
 			t.Fatalf("unexpected request: %#v", body)
+		}
+		if !strings.Contains(body["instructions"].(string), `"루멘"`) {
+			t.Fatalf("display name missing from instructions: %q", body["instructions"])
 		}
 		writer.Header().Set("Content-Type", "application/json")
 		_, _ = writer.Write([]byte(`{"output":[{"content":[{"type":"output_text","text":"OpenAI response"}]}]}`))
@@ -74,7 +78,8 @@ func TestAnthropicProviderUsesMessagesAPI(t *testing.T) {
 
 func sampleRequest() Request {
 	return Request{
-		Messages: []domain.Message{{Role: "user", Content: "hello"}},
-		Memories: []domain.Memory{{Content: "prefers concise replies"}},
+		IdentityName: "루멘",
+		Messages:     []domain.Message{{Role: "user", Content: "hello"}},
+		Memories:     []domain.Memory{{Content: "prefers concise replies"}},
 	}
 }

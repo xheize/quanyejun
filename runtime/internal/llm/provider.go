@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -14,9 +15,10 @@ import (
 )
 
 type Request struct {
-	ActorID  string
-	Messages []domain.Message
-	Memories []domain.Memory
+	ActorID      string
+	IdentityName string
+	Messages     []domain.Message
+	Memories     []domain.Memory
 }
 
 type ProviderInfo struct {
@@ -48,14 +50,15 @@ func (p *BuiltinProvider) Info() ProviderInfo {
 	return p.info
 }
 func (*BuiltinProvider) Generate(_ context.Context, request Request) (string, error) {
+	identityName := domain.NormalizeDisplayName(request.IdentityName)
 	if len(request.Messages) == 0 {
-		return "무엇을 함께 해볼까요?", nil
+		return fmt.Sprintf("%s입니다. 무엇을 함께 해볼까요?", identityName), nil
 	}
 	latest := request.Messages[len(request.Messages)-1].Content
 	if strings.Contains(latest, "기억해") {
 		return "알겠어요. 이 내용은 대화 기록과 별도로 기억에 남겨두었습니다.", nil
 	}
-	return fmt.Sprintf("말씀하신 내용을 이어서 이해했어요: “%s”\n\n현재는 내장 미리보기 응답기를 사용 중입니다. 로컬 모델, Claude API/Code, OpenAI API 또는 Codex CLI가 준비되면 Identity와 기억은 그대로 둔 채 자동으로 추론 엔진을 교체합니다.", latest), nil
+	return fmt.Sprintf("말씀하신 내용을 이어서 이해했어요: “%s”\n\n현재 %s는 내장 미리보기 응답기를 사용 중입니다. 로컬 모델, Claude API/Code, OpenAI API 또는 Codex CLI가 준비되면 Identity와 기억은 그대로 둔 채 자동으로 추론 엔진을 교체합니다.", latest, identityName), nil
 }
 
 type ChatCompletionsProvider struct {
@@ -78,7 +81,7 @@ func (p *ChatCompletionsProvider) Name() string       { return p.info.ID }
 func (p *ChatCompletionsProvider) Info() ProviderInfo { return p.info }
 
 func (p *ChatCompletionsProvider) Generate(ctx context.Context, input Request) (string, error) {
-	messages := []map[string]string{{"role": "system", "content": systemPrompt(input.Memories)}}
+	messages := []map[string]string{{"role": "system", "content": systemPrompt(input.IdentityName, input.Memories)}}
 	for _, message := range input.Messages {
 		messages = append(messages, map[string]string{"role": message.Role, "content": message.Content})
 	}
@@ -125,7 +128,7 @@ func (p *OpenAIProvider) Generate(ctx context.Context, input Request) (string, e
 	}
 	payload := map[string]any{
 		"model":        p.info.Model,
-		"instructions": systemPrompt(input.Memories),
+		"instructions": systemPrompt(input.IdentityName, input.Memories),
 		"input":        messages,
 	}
 	var result struct {
@@ -192,7 +195,7 @@ func (p *AnthropicProvider) Generate(ctx context.Context, input Request) (string
 	payload := map[string]any{
 		"model":      p.info.Model,
 		"max_tokens": p.maxTokens,
-		"system":     systemPrompt(input.Memories),
+		"system":     systemPrompt(input.IdentityName, input.Memories),
 		"messages":   messages,
 	}
 	var result struct {
@@ -255,9 +258,12 @@ func postJSON(ctx context.Context, client *http.Client, url, bearer string, head
 	return nil
 }
 
-func systemPrompt(memories []domain.Memory) string {
+func systemPrompt(identityName string, memories []domain.Memory) string {
+	identityName = domain.NormalizeDisplayName(identityName)
 	var builder strings.Builder
-	builder.WriteString("You are the current reasoning engine for QuanYejun, one persistent identity. Reply in the user's language. Be concise and natural. You are not a separate chat persona. Relevant persistent memories:\n")
+	builder.WriteString("You are the current reasoning engine for one persistent identity in the QuanYejun project. Your display name is ")
+	builder.WriteString(strconv.Quote(identityName))
+	builder.WriteString(". When referring to yourself by name, always use that display name. Reply in the user's language. Be concise and natural. You are not a separate chat persona. Relevant persistent memories:\n")
 	for _, memory := range memories {
 		builder.WriteString("- ")
 		builder.WriteString(memory.Content)
@@ -268,7 +274,7 @@ func systemPrompt(memories []domain.Memory) string {
 
 func cliPrompt(input Request) string {
 	var builder strings.Builder
-	builder.WriteString(systemPrompt(input.Memories))
+	builder.WriteString(systemPrompt(input.IdentityName, input.Memories))
 	builder.WriteString("\nThis is a text-generation request. Do not inspect or modify files, call tools, browse, or execute commands. Return only the reply to the user.\n\nConversation:\n")
 	for _, message := range input.Messages {
 		builder.WriteString(message.Role)

@@ -53,6 +53,7 @@ function relativeTime(value: string) {
 }
 
 export function Dashboard() {
+  const [identityName, setIdentityName] = useState("QuanYejun");
   const [messages, setMessages] = useState<Message[]>(seedMessages);
   const [tasks, setTasks] = useState<RuntimeTask[]>([]);
   const [memories, setMemories] = useState<Memory[]>([]);
@@ -85,6 +86,7 @@ export function Dashboard() {
         if (!response.ok) throw new Error("runtime unavailable");
         const data = await response.json() as Bootstrap;
         if (cancelled) return;
+        setIdentityName(data.identity?.name || "QuanYejun");
         setMessages(data.messages.length ? data.messages : seedMessages);
         setTasks(data.tasks || []);
         setMemories(data.memories || []);
@@ -182,13 +184,14 @@ export function Dashboard() {
   const latestTask = activeTask || tasks.at(-1);
   const latestMemory = memories.at(-1)?.content || "대화에서 오래 남길 가치가 있는 사실을 발견하면 여기에 기억합니다.";
   const visibleEvents = useMemo(() => [...events].reverse().slice(0, 4), [events]);
+  const identityInitial = Array.from(identityName.trim())[0] || "Q";
 
   return (
     <main className="shell">
       <aside className="identity-panel">
         <div className="brand-mark" aria-hidden="true">Q</div>
         <div className="identity-copy">
-          <p className="eyebrow">PERSISTENT IDENTITY</p><h1>QuanYejun</h1>
+          <p className="eyebrow">PERSISTENT IDENTITY</p><h1>{identityName}</h1>
           <p className="identity-state"><span className={`status-dot ${connection}`} /> {connection === "online" ? "깨어 있음" : connection === "connecting" ? "연결 중" : "런타임 대기"}</p>
         </div>
         <nav className="primary-nav" aria-label="주요 메뉴">
@@ -210,16 +213,16 @@ export function Dashboard() {
 
       <section className="conversation" id="conversation">
         <header className="conversation-header">
-          <div><p className="eyebrow">하나의 이어지는 대화</p><h2>소유자님과 QuanYejun</h2></div>
+          <div><p className="eyebrow">하나의 이어지는 대화</p><h2>소유자님과 {identityName}</h2></div>
           <button className="task-launch" type="button" onClick={startDemoTask}>비동기 작업 실행</button>
         </header>
         <div className="conversation-body" aria-live="polite">
           <div className="date-divider"><span>오늘</span></div>
           {messages.map((message) => (
             <article className={`message ${message.role === "user" ? "user-message" : "entity-message"}`} key={message.id}>
-              {message.role === "assistant" && <div className="avatar">Q</div>}
+              {message.role === "assistant" && <div className="avatar">{identityInitial}</div>}
               <div>
-                <div className="message-meta"><strong>{message.role === "user" ? "소유자" : "QuanYejun"}</strong><time>{shortTime(message.createdAt)}</time></div>
+                <div className="message-meta"><strong>{message.role === "user" ? "소유자" : identityName}</strong><time>{shortTime(message.createdAt)}</time></div>
                 <div className="message-bubble"><p>{message.content}</p></div>
               </div>
             </article>
@@ -235,14 +238,14 @@ export function Dashboard() {
               <div className="task-footer"><span>{latestTask.result || "WebSocket과 독립적으로 실행 중"}</span><strong>{latestTask.progress}%</strong></div>
             </article>
           )}
-          {sending && <article className="message entity-message latest"><div className="avatar">Q</div><div><div className="message-meta"><strong>QuanYejun</strong><time>생각 중</time></div><div className="message-bubble typing"><span /><span /><span /></div></div></article>}
+          {sending && <article className="message entity-message latest"><div className="avatar">{identityInitial}</div><div><div className="message-meta"><strong>{identityName}</strong><time>생각 중</time></div><div className="message-bubble typing"><span /><span /><span /></div></div></article>}
           <div ref={scrollAnchor} />
         </div>
         <footer className="composer-wrap">
           {notice && <p className="runtime-notice" role="alert">{notice}</p>}
           <form className="composer" onSubmit={sendMessage}>
             <label className="sr-only" htmlFor="message">메시지</label>
-            <textarea id="message" name="message" value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={handleComposerKey} placeholder="QuanYejun에게 메시지 보내기" rows={1} />
+            <textarea id="message" name="message" value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={handleComposerKey} placeholder={`${identityName}에게 메시지 보내기`} rows={1} />
             <div className="composer-actions">
               <span className={`connection-chip ${connection}`}>{connection === "online" ? "실시간 연결" : "로컬 미리보기"}</span>
               <span>Enter 전송 · Shift + Enter 줄바꿈</span>

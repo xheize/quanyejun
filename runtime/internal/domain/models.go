@@ -1,11 +1,27 @@
 package domain
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 const (
-	IdentityID     = "identity_quanyejun"
-	ConversationID = "global"
+	IdentityID         = "identity_quanyejun"
+	ConversationID     = "global"
+	DefaultDisplayName = "QuanYejun"
 )
+
+func NormalizeDisplayName(value string) string {
+	value = strings.Join(strings.Fields(value), " ")
+	if value == "" {
+		return DefaultDisplayName
+	}
+	runes := []rune(value)
+	if len(runes) > 40 {
+		value = string(runes[:40])
+	}
+	return value
+}
 
 type Identity struct {
 	ID        string    `json:"id"`

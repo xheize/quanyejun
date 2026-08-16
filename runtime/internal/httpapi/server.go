@@ -22,15 +22,16 @@ type Server struct {
 	hub            *eventhub.Hub
 	provider       llm.Provider
 	runner         *tasks.Runner
+	displayName    string
 	allowedOrigins map[string]struct{}
 }
 
-func New(store store.Store, hub *eventhub.Hub, provider llm.Provider, runner *tasks.Runner, origins []string) *Server {
+func New(store store.Store, hub *eventhub.Hub, provider llm.Provider, runner *tasks.Runner, origins []string, displayName string) *Server {
 	allowed := make(map[string]struct{}, len(origins))
 	for _, origin := range origins {
 		allowed[strings.TrimSpace(origin)] = struct{}{}
 	}
-	return &Server{store: store, hub: hub, provider: provider, runner: runner, allowedOrigins: allowed}
+	return &Server{store: store, hub: hub, provider: provider, runner: runner, displayName: domain.NormalizeDisplayName(displayName), allowedOrigins: allowed}
 }
 
 func (s *Server) Handler() http.Handler {
@@ -74,7 +75,7 @@ func (s *Server) originAllowed(origin string) bool {
 }
 
 func (s *Server) health(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"status": "ok", "identity": domain.IdentityID, "llmProvider": s.provider.Name(), "provider": s.provider.Info()})
+	c.JSON(http.StatusOK, gin.H{"status": "ok", "identity": domain.IdentityID, "displayName": s.displayName, "llmProvider": s.provider.Name(), "provider": s.provider.Info()})
 }
 
 func (s *Server) bootstrap(c *gin.Context) {
@@ -84,6 +85,7 @@ func (s *Server) bootstrap(c *gin.Context) {
 		fail(c, err)
 		return
 	}
+	identity.Name = s.displayName
 	messages, err := s.store.ListMessages(c.Request.Context(), actorID, 20)
 	if err != nil {
 		fail(c, err)
@@ -158,7 +160,7 @@ func (s *Server) createMessage(c *gin.Context) {
 		fail(c, err)
 		return
 	}
-	responseText, err := s.provider.Generate(c.Request.Context(), llm.Request{ActorID: input.ActorID, Messages: messages, Memories: memories})
+	responseText, err := s.provider.Generate(c.Request.Context(), llm.Request{ActorID: input.ActorID, IdentityName: s.displayName, Messages: messages, Memories: memories})
 	if err != nil {
 		slog.Error("reasoning engine failed", "provider", s.provider.Name(), "error", err)
 		c.JSON(http.StatusBadGateway, gin.H{"error": "reasoning engine failed"})

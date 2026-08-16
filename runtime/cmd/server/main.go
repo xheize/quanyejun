@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/quanyejun/quanyejun/runtime/internal/domain"
 	"github.com/quanyejun/quanyejun/runtime/internal/eventhub"
 	"github.com/quanyejun/quanyejun/runtime/internal/httpapi"
 	"github.com/quanyejun/quanyejun/runtime/internal/llm"
@@ -26,11 +27,12 @@ func main() {
 	provider := buildProvider(ctx)
 	runner := tasks.NewRunner(dataStore, hub)
 	origins := strings.Split(env("ALLOWED_ORIGINS", "http://localhost:3000"), ",")
-	api := httpapi.New(dataStore, hub, provider, runner, origins)
+	displayName := domain.NormalizeDisplayName(os.Getenv("IDENTITY_DISPLAY_NAME"))
+	api := httpapi.New(dataStore, hub, provider, runner, origins, displayName)
 	server := &http.Server{Addr: ":" + env("PORT", "8080"), Handler: api.Handler(), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 75 * time.Second}
 	go func() {
 		info := provider.Info()
-		slog.Info("QuanYejun runtime listening", "address", server.Addr, "llmProvider", info.ID, "llmModel", info.Model, "providerSource", info.Source)
+		slog.Info("QuanYejun runtime listening", "address", server.Addr, "displayName", displayName, "llmProvider", info.ID, "llmModel", info.Model, "providerSource", info.Source)
 		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			slog.Error("runtime stopped", "error", err)
 			os.Exit(1)

@@ -50,7 +50,7 @@ func (s *PostgresStore) ensureSchema(ctx context.Context) error {
 }
 
 func (s *PostgresStore) EnsureIdentity(ctx context.Context) (domain.Identity, error) {
-	identity := domain.Identity{ID: domain.IdentityID, Name: "QuanYejun", Status: "active", CreatedAt: time.Now().UTC()}
+	identity := domain.Identity{ID: domain.IdentityID, Name: domain.DefaultDisplayName, Status: "active", CreatedAt: time.Now().UTC()}
 	_, err := s.pool.Exec(ctx, `INSERT INTO identities (id, name, status, created_at) VALUES ($1,$2,$3,$4) ON CONFLICT (id) DO NOTHING`, identity.ID, identity.Name, identity.Status, identity.CreatedAt)
 	if err != nil {
 		return domain.Identity{}, err

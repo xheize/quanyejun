@@ -35,7 +35,7 @@ type MemoryStore struct {
 func NewMemoryStore() *MemoryStore {
 	now := time.Now().UTC()
 	return &MemoryStore{
-		identity: domain.Identity{ID: domain.IdentityID, Name: "QuanYejun", Status: "active", CreatedAt: now},
+		identity: domain.Identity{ID: domain.IdentityID, Name: domain.DefaultDisplayName, Status: "active", CreatedAt: now},
 		memories: []domain.Memory{{ID: uuid.NewString(), ActorID: "person_example", Content: "사용자가 명시적으로 제공한 선호만 기억한다.", CreatedAt: now}},
 	}
 }

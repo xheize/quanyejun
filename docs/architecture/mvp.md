@@ -4,6 +4,8 @@
 
 웹소켓, HTTP 요청, LLM 호출, 작업 실행은 모두 수명이 짧습니다. `identity_quanyejun`과 PostgreSQL에 기록된 대화·기억·작업·이벤트가 연속성을 소유합니다.
 
+프로젝트와 내부 Identity ID는 고정되지만 사용자에게 보이는 자기 이름은 `IDENTITY_DISPLAY_NAME`으로 분리합니다. Runtime이 정규화한 표기명을 bootstrap 응답과 LLM 문맥에 함께 전달하므로 이름을 바꿔도 저장된 Identity의 연속성은 유지됩니다.
+
 ```mermaid
 flowchart LR
   U["사람 / 외부 이벤트"] --> API["Gin HTTP + WebSocket"]

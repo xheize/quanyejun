@@ -53,6 +53,17 @@ docs/architecture/  설계와 MVP 경계
 
 웹은 `http://localhost:3000`, 런타임은 `http://localhost:8080`에서 실행됩니다. PostgreSQL 없이 런타임만 실행하면 메모리 저장소를 사용하므로 동작은 확인할 수 있지만 재시작 후 데이터는 사라집니다.
 
+## Identity 표기명 변경
+
+프로젝트 이름과 내부 ID `identity_quanyejun`은 고정하고, 화면과 대화에서 자신을 부르는 이름만 바꿀 수 있습니다. 런타임을 시작하기 전에 다음 값을 설정합니다.
+
+```powershell
+$env:IDENTITY_DISPLAY_NAME = "루멘"
+go run ./cmd/server
+```
+
+표기명을 바꿔도 같은 내부 Identity를 사용하므로 기존 대화와 기억은 그대로 이어집니다. 빈 값은 기본 이름 `QuanYejun`으로 처리하고, 앞뒤·연속 공백을 정리하며 최대 40자로 제한합니다.
+
 ## 추론 엔진 자동 감지
 
 기본값 `LLM_PROVIDER=auto`는 다음 순서로 사용 가능한 엔진을 찾습니다.
