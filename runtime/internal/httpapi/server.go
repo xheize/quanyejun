@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -73,7 +74,7 @@ func (s *Server) originAllowed(origin string) bool {
 }
 
 func (s *Server) health(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"status": "ok", "identity": domain.IdentityID, "llmProvider": s.provider.Name()})
+	c.JSON(http.StatusOK, gin.H{"status": "ok", "identity": domain.IdentityID, "llmProvider": s.provider.Name(), "provider": s.provider.Info()})
 }
 
 func (s *Server) bootstrap(c *gin.Context) {
@@ -103,7 +104,7 @@ func (s *Server) bootstrap(c *gin.Context) {
 		fail(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"identity": identity, "messages": messages, "memories": memories, "tasks": tasksList, "events": events})
+	c.JSON(http.StatusOK, gin.H{"identity": identity, "provider": s.provider.Info(), "messages": messages, "memories": memories, "tasks": tasksList, "events": events})
 }
 
 type messageInput struct {
@@ -159,6 +160,7 @@ func (s *Server) createMessage(c *gin.Context) {
 	}
 	responseText, err := s.provider.Generate(c.Request.Context(), llm.Request{ActorID: input.ActorID, Messages: messages, Memories: memories})
 	if err != nil {
+		slog.Error("reasoning engine failed", "provider", s.provider.Name(), "error", err)
 		c.JSON(http.StatusBadGateway, gin.H{"error": "reasoning engine failed"})
 		return
 	}

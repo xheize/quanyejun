@@ -23,13 +23,14 @@ func main() {
 	dataStore := buildStore(ctx)
 	defer dataStore.Close()
 	hub := eventhub.New()
-	provider := buildProvider()
+	provider := buildProvider(ctx)
 	runner := tasks.NewRunner(dataStore, hub)
 	origins := strings.Split(env("ALLOWED_ORIGINS", "http://localhost:3000"), ",")
 	api := httpapi.New(dataStore, hub, provider, runner, origins)
 	server := &http.Server{Addr: ":" + env("PORT", "8080"), Handler: api.Handler(), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 75 * time.Second}
 	go func() {
-		slog.Info("QuanYejun runtime listening", "address", server.Addr, "llmProvider", provider.Name())
+		info := provider.Info()
+		slog.Info("QuanYejun runtime listening", "address", server.Addr, "llmProvider", info.ID, "llmModel", info.Model, "providerSource", info.Source)
 		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			slog.Error("runtime stopped", "error", err)
 			os.Exit(1)
@@ -59,13 +60,13 @@ func buildStore(ctx context.Context) store.Store {
 	slog.Info("persistent storage ready", "driver", "postgres")
 	return postgres
 }
-func buildProvider() llm.Provider {
-	apiKey := os.Getenv("OPENAI_API_KEY")
-	model := os.Getenv("LLM_MODEL")
-	if apiKey == "" || model == "" {
-		return llm.NewLocalProvider()
+func buildProvider(ctx context.Context) llm.Provider {
+	provider, err := llm.DetectProvider(ctx, llm.DetectOptions{})
+	if err != nil {
+		slog.Error("LLM provider detection failed", "error", err)
+		os.Exit(1)
 	}
-	return llm.NewOpenAICompatibleProvider(apiKey, model, env("OPENAI_BASE_URL", "https://api.openai.com/v1"))
+	return provider
 }
 func env(key, fallback string) string {
 	if value := os.Getenv(key); value != "" {

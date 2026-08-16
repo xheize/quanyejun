@@ -6,8 +6,10 @@ type Message = { id: string; role: "user" | "assistant"; content: string; create
 type RuntimeTask = { id: string; title: string; status: string; progress: number; result?: string; createdAt: string; updatedAt: string };
 type Memory = { id: string; content: string; createdAt: string };
 type RuntimeEvent = { id: string; type: string; timestamp: string; payload: Record<string, unknown> };
+type ProviderInfo = { id: string; label: string; model?: string; source: string };
 type Bootstrap = {
   identity: { id: string; name: string; status: string };
+  provider: ProviderInfo;
   messages: Message[];
   memories: Memory[];
   tasks: RuntimeTask[];
@@ -20,6 +22,7 @@ const seedMessages: Message[] = [
   { id: "seed-1", role: "assistant", content: "좋은 아침이에요. 하나의 지속되는 Identity로 준비되어 있어요. 런타임을 연결하면 이 대화와 작업 상태가 PostgreSQL에 이어서 저장됩니다.", createdAt: "" },
 ];
 const previewEvent: RuntimeEvent = { id: "preview", type: "system.ready", timestamp: "", payload: {} };
+const previewProvider: ProviderInfo = { id: "builtin", label: "Built-in preview", source: "fallback" };
 
 const eventCopy: Record<string, [string, string]> = {
   "system.ready": ["런타임 준비", "지속 Identity가 입력을 받을 준비를 마쳤습니다."],
@@ -54,6 +57,7 @@ export function Dashboard() {
   const [tasks, setTasks] = useState<RuntimeTask[]>([]);
   const [memories, setMemories] = useState<Memory[]>([]);
   const [events, setEvents] = useState<RuntimeEvent[]>([]);
+  const [provider, setProvider] = useState<ProviderInfo>(previewProvider);
   const [connection, setConnection] = useState<"connecting" | "online" | "offline">("connecting");
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
@@ -85,6 +89,7 @@ export function Dashboard() {
         setTasks(data.tasks || []);
         setMemories(data.memories || []);
         setEvents(data.events || []);
+        setProvider(data.provider || previewProvider);
         lastEventId.current = data.events.at(-1)?.id || "";
         connect();
       } catch {
@@ -200,7 +205,7 @@ export function Dashboard() {
             <div><dt>마지막 활동</dt><dd>{events.length ? relativeTime(events.at(-1)!.timestamp) : "대기"}</dd></div>
           </dl>
         </section>
-        <p className="model-label">Reasoning engine · provider agnostic</p>
+        <p className="model-label" title={provider.source}>Reasoning engine · {provider.label}{provider.model ? ` · ${provider.model}` : ""}</p>
       </aside>
 
       <section className="conversation" id="conversation">
