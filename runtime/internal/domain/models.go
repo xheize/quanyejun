@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"encoding/json"
 	"strings"
 	"time"
 )
@@ -66,4 +67,41 @@ type Event struct {
 	ConversationID string         `json:"conversationId"`
 	Timestamp      time.Time      `json:"timestamp"`
 	Payload        map[string]any `json:"payload"`
+}
+
+type AgentRun struct {
+	ID             string    `json:"id"`
+	IdentityID     string    `json:"identityId"`
+	ActorID        string    `json:"actorId"`
+	ConversationID string    `json:"conversationId"`
+	ParentRunID    string    `json:"parentRunId,omitempty"`
+	InputMessageID string    `json:"inputMessageId,omitempty"`
+	Kind           string    `json:"kind"`
+	Provider       string    `json:"provider"`
+	Model          string    `json:"model,omitempty"`
+	Status         string    `json:"status"`
+	Goal           string    `json:"goal"`
+	Result         string    `json:"result,omitempty"`
+	Error          string    `json:"error,omitempty"`
+	Attempt        int       `json:"attempt"`
+	CreatedAt      time.Time `json:"createdAt"`
+	UpdatedAt      time.Time `json:"updatedAt"`
+	StartedAt      time.Time `json:"startedAt,omitempty"`
+	CompletedAt    time.Time `json:"completedAt,omitempty"`
+}
+
+type RunStep struct {
+	ID                 string          `json:"id"`
+	RunID              string          `json:"runId"`
+	Sequence           int             `json:"sequence"`
+	Kind               string          `json:"kind"`
+	Status             string          `json:"status"`
+	ProviderResponseID string          `json:"providerResponseId,omitempty"`
+	CallID             string          `json:"callId,omitempty"`
+	ToolName           string          `json:"toolName,omitempty"`
+	Input              json.RawMessage `json:"input,omitempty"`
+	Output             json.RawMessage `json:"output,omitempty"`
+	Error              string          `json:"error,omitempty"`
+	CreatedAt          time.Time       `json:"createdAt"`
+	CompletedAt        time.Time       `json:"completedAt,omitempty"`
 }

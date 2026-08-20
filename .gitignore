@@ -43,5 +43,10 @@ yarn-error.log*
 
 # Go build artifacts
 /runtime/bin/
+/runtime/.gocache/
 /.runtime/
 /runtime/.runtime/
+
+# Administrator-owned runtime configuration (examples remain tracked)
+/config/mcp-servers.json
+/config/mcp-authority.json

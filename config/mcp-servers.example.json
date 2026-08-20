@@ -1,0 +1,17 @@
+{
+  "servers": [
+    {
+      "name": "example",
+      "description": "Administrator-managed remote MCP server",
+      "url": "https://mcp.example.com/mcp",
+      "enabled": false,
+      "allowedTools": [
+        "read_document"
+      ],
+      "headerEnv": {
+        "Authorization": "EXAMPLE_MCP_AUTHORIZATION"
+      },
+      "timeoutSeconds": 30
+    }
+  ]
+}

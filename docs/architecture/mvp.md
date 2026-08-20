@@ -24,21 +24,21 @@ flowchart LR
 
 1. 런타임이 사용자의 메시지를 먼저 저장하고 `chat.message` 이벤트를 기록합니다.
 2. 최근 메시지 10개와 관련 기억 5개를 조회합니다.
-3. 현재 Parent LLM 제공자에게 짧은 문맥을 전달합니다.
-4. 응답 메시지와 이벤트를 저장한 다음 연결된 모든 클라이언트에 전달합니다.
-5. 사용자가 “기억해” 또는 “remember”라고 명시한 메시지는 원문 대화와 별도의 기억 레코드로 저장합니다.
+3. 영속 `AgentRun`을 만든 뒤 HTTP 요청에는 `202 Accepted`와 Run ID를 반환합니다.
+4. Agent Runner가 현재 Parent LLM API에 짧은 문맥과 허용된 도구 정의를 전달합니다.
+5. Tool Call은 실행 전후를 `run_steps`에 기록하고 결과를 다시 모델에 전달합니다.
+6. 최종 응답 메시지와 이벤트를 저장한 다음 연결된 모든 클라이언트에 전달합니다.
+7. 명시적 기억 요청은 `memory_remember` 도구를 통해 별도의 기억 레코드로 저장합니다.
 
 ## Provider 선택
 
-`llm.Provider` 뒤에 로컬 OpenAI 호환 모델, Claude Messages API, Claude Code CLI, OpenAI Responses API, Codex CLI, 내장 미리보기 응답기를 둡니다. 자동 감지는 설정된 로컬 모델 또는 실행 중인 Ollama/LM Studio, API 자격 증명과 모델, 실행 가능하고 인증된 CLI를 순서대로 검사합니다. 모델을 바꾸어도 Identity 데이터의 소유권은 Runtime에 남습니다.
-
-CLI provider는 일회용 임시 디렉터리에서 도구 없이 실행합니다. Claude Code는 세션 영속화와 도구를 비활성화하고, Codex는 ephemeral·read-only 모드를 사용합니다. 코딩 에이전트의 인증을 재사용하되 provider 역할은 텍스트 생성으로 제한합니다.
+`llm.Provider` 뒤에 OpenAI Responses API, Anthropic Messages API, 로컬 OpenAI 호환 HTTP API, 내장 미리보기 응답기를 둡니다. 운영에서는 Provider를 명시적으로 선택하고 API 자격 증명을 사용합니다. CLI 로그인이나 세션을 추론 계층에서 재사용하지 않습니다. 모델을 바꾸어도 Identity 데이터의 소유권은 Runtime에 남습니다.
 
 ## 작업 흐름
 
 `POST /api/tasks/demo`는 작업을 먼저 저장하고 goroutine을 시작합니다. 이후 WebSocket이 끊겨도 작업은 런타임 프로세스 안에서 계속되며, 각 진행 단계가 DB 이벤트로 남습니다. 재연결한 클라이언트는 `lastEventId` 이후 이벤트를 재생합니다.
 
-현재 작업 실행기는 프로세스 재시작까지 견디지는 않습니다. 영속 작업 재개와 외부 큐는 이 수직 조각에서 실제 필요성이 확인된 뒤 추가합니다.
+Agent Run은 시작 시 `queued`와 중단된 `running` 상태를 조회해 다시 실행합니다. 데모 Task Runner는 아직 프로세스 재시작까지 견디지 않으며, 외부 큐는 실제 처리량 요구가 확인된 뒤 추가합니다.
 
 ## 권한 경계
 

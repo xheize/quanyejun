@@ -67,5 +67,6 @@ type Environment interface {
 	Prepare(context.Context) error
 	Inspect(context.Context) (Info, error)
 	LookPath(context.Context, string) (string, error)
+	ReadFile(context.Context, string) ([]byte, error)
 	Run(context.Context, RunSpec) (RunResult, error)
 }

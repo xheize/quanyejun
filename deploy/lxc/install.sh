@@ -14,6 +14,7 @@ fi
 binary_path=$(readlink -f "$1")
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 common_dir=$(cd -- "${script_dir}/../common" && pwd)
+config_examples_dir=$(cd -- "${script_dir}/../../config" && pwd)
 
 if ! id quanyejun >/dev/null 2>&1; then
   useradd --system --home-dir /var/lib/quanyejun/home --create-home --shell /usr/sbin/nologin quanyejun
@@ -29,6 +30,12 @@ install -o root -g root -m 0644 "${script_dir}/quanyejun.service" /etc/systemd/s
 
 if [[ ! -f /etc/quanyejun/config.env ]]; then
   install -o root -g quanyejun -m 0640 "${common_dir}/quanyejun.env.example" /etc/quanyejun/config.env
+fi
+if [[ ! -f /etc/quanyejun/mcp-servers.json ]]; then
+  install -o root -g quanyejun -m 0640 "${config_examples_dir}/mcp-servers.example.json" /etc/quanyejun/mcp-servers.json
+fi
+if [[ ! -f /etc/quanyejun/mcp-authority.json ]]; then
+  install -o root -g quanyejun -m 0640 "${config_examples_dir}/mcp-authority.example.json" /etc/quanyejun/mcp-authority.json
 fi
 
 systemctl daemon-reload

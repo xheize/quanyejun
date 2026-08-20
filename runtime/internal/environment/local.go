@@ -116,6 +116,26 @@ func (l *Local) LookPath(_ context.Context, name string) (string, error) {
 	return exec.LookPath(name)
 }
 
+func (l *Local) ReadFile(ctx context.Context, relativePath string) ([]byte, error) {
+	if _, ok := l.granted[CanReadFiles]; !ok {
+		return nil, fmt.Errorf("environment authority does not grant %q", CanReadFiles)
+	}
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+	}
+	target, err := secureWorkspacePath(l.config.Paths.Workspace, relativePath)
+	if err != nil {
+		return nil, err
+	}
+	content, err := os.ReadFile(target)
+	if err != nil {
+		return nil, fmt.Errorf("read workspace file: %w", err)
+	}
+	return content, nil
+}
+
 func (l *Local) Run(ctx context.Context, spec RunSpec) (RunResult, error) {
 	if strings.TrimSpace(spec.Command) == "" {
 		return RunResult{ExitCode: -1}, fmt.Errorf("environment command is required")
@@ -219,4 +239,24 @@ func parseCapabilities(value string) []Capability {
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i] < result[j] })
 	return result
+}
+
+func secureWorkspacePath(workspace, relativePath string) (string, error) {
+	relativePath = strings.TrimSpace(relativePath)
+	if relativePath == "" || filepath.IsAbs(relativePath) {
+		return "", fmt.Errorf("workspace path must be relative")
+	}
+	root, err := filepath.Abs(workspace)
+	if err != nil {
+		return "", fmt.Errorf("resolve workspace root: %w", err)
+	}
+	target, err := filepath.Abs(filepath.Join(root, filepath.Clean(relativePath)))
+	if err != nil {
+		return "", fmt.Errorf("resolve workspace path: %w", err)
+	}
+	rel, err := filepath.Rel(root, target)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("workspace path escapes the workspace")
+	}
+	return target, nil
 }

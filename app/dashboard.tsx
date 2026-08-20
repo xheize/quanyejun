@@ -4,6 +4,7 @@ import { FormEvent, KeyboardEvent, useCallback, useEffect, useMemo, useRef, useS
 
 type Message = { id: string; role: "user" | "assistant"; content: string; createdAt: string };
 type RuntimeTask = { id: string; title: string; status: string; progress: number; result?: string; createdAt: string; updatedAt: string };
+type AgentRun = { id: string; status: string; goal: string; result?: string; error?: string; createdAt: string; updatedAt: string };
 type Memory = { id: string; content: string; createdAt: string };
 type RuntimeEvent = { id: string; type: string; timestamp: string; payload: Record<string, unknown> };
 type ProviderInfo = { id: string; label: string; model?: string; source: string };
@@ -23,6 +24,7 @@ type Bootstrap = {
   messages: Message[];
   memories: Memory[];
   tasks: RuntimeTask[];
+  runs: AgentRun[];
   events: RuntimeEvent[];
 };
 
@@ -38,6 +40,12 @@ const previewEnvironment: EnvironmentInfo = { kind: "local", profile: "preview",
 const eventCopy: Record<string, [string, string]> = {
   "system.ready": ["런타임 준비", "지속 Identity가 입력을 받을 준비를 마쳤습니다."],
   "chat.message": ["새 대화", "대화가 이벤트와 기억 후보로 기록됐습니다."],
+  "run.created": ["추론 작업 생성", "요청을 영속 Agent Run으로 등록했습니다."],
+  "run.started": ["추론 시작", "API 모델과 도구 실행 루프를 시작했습니다."],
+  "run.completed": ["추론 완료", "최종 응답과 실행 단계를 저장했습니다."],
+  "run.failed": ["추론 실패", "실행 기록을 보존한 채 작업을 종료했습니다."],
+  "tool.started": ["도구 실행", "권한이 허용된 런타임 도구를 실행하고 있습니다."],
+  "tool.completed": ["도구 완료", "도구 결과를 모델 문맥으로 반환했습니다."],
   "task.created": ["작업 생성", "WebSocket 연결과 독립된 작업을 시작했습니다."],
   "task.progress": ["작업 진행", "결정적 런타임이 진행 상태를 갱신했습니다."],
   "task.completed": ["작업 완료", "결과를 저장하고 모든 연결에 전달했습니다."],
@@ -83,8 +91,15 @@ export function Dashboard() {
     setEvents((current) => upsert(current, event).slice(-20));
     const message = event.payload.message as Message | undefined;
     const task = event.payload.task as RuntimeTask | undefined;
-    if (message?.id) setMessages((current) => upsert(current, message));
+    if (message?.id) {
+      setMessages((current) => upsert(current, message));
+      if (message.role === "assistant") setSending(false);
+    }
     if (task?.id) setTasks((current) => upsert(current, task));
+    if (event.type === "run.failed") {
+      setSending(false);
+      setNotice("추론 작업이 실패했습니다. 활동 스트림에서 실행 기록을 확인해주세요.");
+    }
   }, []);
 
   useEffect(() => {
@@ -160,12 +175,11 @@ export function Dashboard() {
         body: JSON.stringify({ actorId, content }),
       });
       if (!response.ok) throw new Error("message failed");
-      const result = await response.json() as { userMessage: Message; assistantMessage: Message };
-      setMessages((current) => upsert(upsert(current, result.userMessage), result.assistantMessage));
+      const result = await response.json() as { userMessage: Message; runId: string; run: AgentRun };
+      setMessages((current) => upsert(current, result.userMessage));
     } catch {
       setDraft(content);
       setNotice("런타임에 연결할 수 없습니다. 잠시 뒤 다시 시도해주세요.");
-    } finally {
       setSending(false);
     }
   }

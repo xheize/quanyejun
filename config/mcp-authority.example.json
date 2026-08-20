@@ -1,0 +1,12 @@
+{
+  "grants": [
+    {
+      "identityId": "identity_quanyejun",
+      "server": "example",
+      "tools": [
+        "read_document"
+      ],
+      "grantedBy": "parent"
+    }
+  ]
+}

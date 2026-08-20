@@ -38,6 +38,11 @@ func (s *PostgresStore) ensureSchema(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS memories_actor_created_idx ON memories (actor_id, created_at DESC)`,
 		`CREATE TABLE IF NOT EXISTS tasks (id TEXT PRIMARY KEY, actor_id TEXT NOT NULL, title TEXT NOT NULL, type TEXT NOT NULL, status TEXT NOT NULL, progress INTEGER NOT NULL, result TEXT NOT NULL DEFAULT '', created_at TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL)`,
 		`CREATE INDEX IF NOT EXISTS tasks_actor_updated_idx ON tasks (actor_id, updated_at DESC)`,
+		`CREATE TABLE IF NOT EXISTS agent_runs (id TEXT PRIMARY KEY, identity_id TEXT NOT NULL, actor_id TEXT NOT NULL, conversation_id TEXT NOT NULL, parent_run_id TEXT NOT NULL DEFAULT '', input_message_id TEXT NOT NULL DEFAULT '', kind TEXT NOT NULL, provider TEXT NOT NULL, model TEXT NOT NULL DEFAULT '', status TEXT NOT NULL, goal TEXT NOT NULL, result TEXT NOT NULL DEFAULT '', error TEXT NOT NULL DEFAULT '', attempt INTEGER NOT NULL DEFAULT 0, created_at TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL, started_at TIMESTAMPTZ NOT NULL, completed_at TIMESTAMPTZ NOT NULL)`,
+		`CREATE INDEX IF NOT EXISTS agent_runs_actor_updated_idx ON agent_runs (actor_id, updated_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS agent_runs_status_created_idx ON agent_runs (status, created_at)`,
+		`CREATE TABLE IF NOT EXISTS run_steps (id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE, sequence INTEGER NOT NULL, kind TEXT NOT NULL, status TEXT NOT NULL, provider_response_id TEXT NOT NULL DEFAULT '', call_id TEXT NOT NULL DEFAULT '', tool_name TEXT NOT NULL DEFAULT '', input JSONB NOT NULL DEFAULT 'null', output JSONB NOT NULL DEFAULT 'null', error TEXT NOT NULL DEFAULT '', created_at TIMESTAMPTZ NOT NULL, completed_at TIMESTAMPTZ NOT NULL, UNIQUE(run_id, sequence))`,
+		`CREATE INDEX IF NOT EXISTS run_steps_run_sequence_idx ON run_steps (run_id, sequence)`,
 		`CREATE TABLE IF NOT EXISTS events (seq BIGSERIAL PRIMARY KEY, id TEXT NOT NULL UNIQUE, type TEXT NOT NULL, source TEXT NOT NULL, actor_id TEXT NOT NULL DEFAULT '', conversation_id TEXT NOT NULL, timestamp TIMESTAMPTZ NOT NULL, payload JSONB NOT NULL)`,
 		`CREATE INDEX IF NOT EXISTS events_timestamp_idx ON events (timestamp DESC)`,
 	}
@@ -122,6 +127,56 @@ func (s *PostgresStore) ListTasks(ctx context.Context, actorID string, limit int
 	}
 	return items, rows.Err()
 }
+func (s *PostgresStore) CreateAgentRun(ctx context.Context, run domain.AgentRun) error {
+	_, err := s.pool.Exec(ctx, `INSERT INTO agent_runs (id,identity_id,actor_id,conversation_id,parent_run_id,input_message_id,kind,provider,model,status,goal,result,error,attempt,created_at,updated_at,started_at,completed_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`, run.ID, run.IdentityID, run.ActorID, run.ConversationID, run.ParentRunID, run.InputMessageID, run.Kind, run.Provider, run.Model, run.Status, run.Goal, run.Result, run.Error, run.Attempt, run.CreatedAt, run.UpdatedAt, run.StartedAt, run.CompletedAt)
+	return err
+}
+func (s *PostgresStore) UpdateAgentRun(ctx context.Context, run domain.AgentRun) error {
+	_, err := s.pool.Exec(ctx, `UPDATE agent_runs SET status=$2,result=$3,error=$4,attempt=$5,updated_at=$6,started_at=$7,completed_at=$8 WHERE id=$1`, run.ID, run.Status, run.Result, run.Error, run.Attempt, run.UpdatedAt, run.StartedAt, run.CompletedAt)
+	return err
+}
+func (s *PostgresStore) GetAgentRun(ctx context.Context, id string) (domain.AgentRun, error) {
+	var run domain.AgentRun
+	err := s.pool.QueryRow(ctx, `SELECT id,identity_id,actor_id,conversation_id,parent_run_id,input_message_id,kind,provider,model,status,goal,result,error,attempt,created_at,updated_at,started_at,completed_at FROM agent_runs WHERE id=$1`, id).Scan(&run.ID, &run.IdentityID, &run.ActorID, &run.ConversationID, &run.ParentRunID, &run.InputMessageID, &run.Kind, &run.Provider, &run.Model, &run.Status, &run.Goal, &run.Result, &run.Error, &run.Attempt, &run.CreatedAt, &run.UpdatedAt, &run.StartedAt, &run.CompletedAt)
+	return run, err
+}
+func (s *PostgresStore) ListAgentRuns(ctx context.Context, actorID string, limit int) ([]domain.AgentRun, error) {
+	rows, err := s.pool.Query(ctx, `SELECT id,identity_id,actor_id,conversation_id,parent_run_id,input_message_id,kind,provider,model,status,goal,result,error,attempt,created_at,updated_at,started_at,completed_at FROM (SELECT * FROM agent_runs WHERE actor_id=$1 ORDER BY updated_at DESC LIMIT $2) recent ORDER BY updated_at`, actorID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanAgentRuns(rows, limit)
+}
+func (s *PostgresStore) ListAgentRunsByStatus(ctx context.Context, statuses []string, limit int) ([]domain.AgentRun, error) {
+	rows, err := s.pool.Query(ctx, `SELECT id,identity_id,actor_id,conversation_id,parent_run_id,input_message_id,kind,provider,model,status,goal,result,error,attempt,created_at,updated_at,started_at,completed_at FROM agent_runs WHERE status = ANY($1) ORDER BY created_at LIMIT $2`, statuses, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanAgentRuns(rows, limit)
+}
+func (s *PostgresStore) AppendRunStep(ctx context.Context, step domain.RunStep) error {
+	input, output := rawOrNull(step.Input), rawOrNull(step.Output)
+	_, err := s.pool.Exec(ctx, `INSERT INTO run_steps (id,run_id,sequence,kind,status,provider_response_id,call_id,tool_name,input,output,error,created_at,completed_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`, step.ID, step.RunID, step.Sequence, step.Kind, step.Status, step.ProviderResponseID, step.CallID, step.ToolName, input, output, step.Error, step.CreatedAt, step.CompletedAt)
+	return err
+}
+func (s *PostgresStore) ListRunSteps(ctx context.Context, runID string) ([]domain.RunStep, error) {
+	rows, err := s.pool.Query(ctx, `SELECT id,run_id,sequence,kind,status,provider_response_id,call_id,tool_name,input,output,error,created_at,completed_at FROM run_steps WHERE run_id=$1 ORDER BY sequence`, runID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	steps := make([]domain.RunStep, 0)
+	for rows.Next() {
+		var step domain.RunStep
+		if err := rows.Scan(&step.ID, &step.RunID, &step.Sequence, &step.Kind, &step.Status, &step.ProviderResponseID, &step.CallID, &step.ToolName, &step.Input, &step.Output, &step.Error, &step.CreatedAt, &step.CompletedAt); err != nil {
+			return nil, err
+		}
+		steps = append(steps, step)
+	}
+	return steps, rows.Err()
+}
 func (s *PostgresStore) AppendEvent(ctx context.Context, event domain.Event) error {
 	payload, err := json.Marshal(event.Payload)
 	if err != nil {
@@ -162,3 +217,28 @@ func (s *PostgresStore) ListEventsAfter(ctx context.Context, after string, limit
 	return items, rows.Err()
 }
 func (s *PostgresStore) Close() { s.pool.Close() }
+
+type agentRunRows interface {
+	Next() bool
+	Scan(...any) error
+	Err() error
+}
+
+func scanAgentRuns(rows agentRunRows, capacity int) ([]domain.AgentRun, error) {
+	items := make([]domain.AgentRun, 0, capacity)
+	for rows.Next() {
+		var run domain.AgentRun
+		if err := rows.Scan(&run.ID, &run.IdentityID, &run.ActorID, &run.ConversationID, &run.ParentRunID, &run.InputMessageID, &run.Kind, &run.Provider, &run.Model, &run.Status, &run.Goal, &run.Result, &run.Error, &run.Attempt, &run.CreatedAt, &run.UpdatedAt, &run.StartedAt, &run.CompletedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, run)
+	}
+	return items, rows.Err()
+}
+
+func rawOrNull(value json.RawMessage) []byte {
+	if len(value) == 0 {
+		return []byte("null")
+	}
+	return value
+}

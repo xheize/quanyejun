@@ -52,3 +52,25 @@ func TestLocalRunEnforcesAuthoritySeparatelyFromCapability(t *testing.T) {
 		t.Fatal("expected shell authority denial")
 	}
 }
+
+func TestLocalReadFileStaysInsideWorkspace(t *testing.T) {
+	root := t.TempDir()
+	local := NewLocal(Config{
+		Kind: "test", Profile: "reader",
+		Paths:     Paths{Home: filepath.Join(root, "home"), Workspace: filepath.Join(root, "workspace"), Config: filepath.Join(root, "config"), Cache: filepath.Join(root, "cache")},
+		Authority: Authority{Mode: "internal", Granted: []Capability{CanReadFiles}},
+	})
+	if err := local.Prepare(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "workspace", "note.txt"), []byte("hello"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	content, err := local.ReadFile(context.Background(), "note.txt")
+	if err != nil || string(content) != "hello" {
+		t.Fatalf("content=%q err=%v", content, err)
+	}
+	if _, err := local.ReadFile(context.Background(), "../outside.txt"); err == nil {
+		t.Fatal("expected workspace escape rejection")
+	}
+}

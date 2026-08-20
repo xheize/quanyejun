@@ -30,18 +30,18 @@ func TestOpenAIProviderUsesResponsesAPI(t *testing.T) {
 			t.Fatalf("display name missing from instructions: %q", body["instructions"])
 		}
 		writer.Header().Set("Content-Type", "application/json")
-		_, _ = writer.Write([]byte(`{"output":[{"content":[{"type":"output_text","text":"OpenAI response"}]}]}`))
+		_, _ = writer.Write([]byte(`{"id":"resp_test","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"OpenAI response"}]}]}`))
 	}))
 	defer server.Close()
 
-	provider := NewOpenAIProvider("secret", "test-model", server.URL+"/v1", "test")
+	provider := NewOpenAIProvider("secret", "test-model", server.URL+"/v1", "test", false)
 	provider.client = server.Client()
-	text, err := provider.Generate(context.Background(), sampleRequest())
+	result, err := provider.Turn(context.Background(), sampleRequest())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if text != "OpenAI response" {
-		t.Fatalf("response = %q", text)
+	if result.Text != "OpenAI response" {
+		t.Fatalf("response = %q", result.Text)
 	}
 }
 
@@ -67,12 +67,67 @@ func TestAnthropicProviderUsesMessagesAPI(t *testing.T) {
 
 	provider := NewAnthropicProvider("secret", "claude-test", server.URL, "test", 512)
 	provider.client = server.Client()
-	text, err := provider.Generate(context.Background(), sampleRequest())
+	result, err := provider.Turn(context.Background(), sampleRequest())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if text != "Claude response" {
-		t.Fatalf("response = %q", text)
+	if result.Text != "Claude response" {
+		t.Fatalf("response = %q", result.Text)
+	}
+}
+
+func TestOpenAIProviderContinuesFunctionCallWithOutput(t *testing.T) {
+	requestNumber := 0
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		requestNumber++
+		var body map[string]any
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		if requestNumber == 1 {
+			if _, ok := body["tools"]; !ok {
+				t.Fatalf("tools missing: %#v", body)
+			}
+			_, _ = writer.Write([]byte(`{"id":"resp_1","status":"completed","output":[{"type":"function_call","call_id":"call_1","name":"memory_remember","arguments":"{\"content\":\"remember this\"}"}]}`))
+			return
+		}
+		encoded, _ := json.Marshal(body["input"])
+		if !strings.Contains(string(encoded), `function_call_output`) || !strings.Contains(string(encoded), `call_1`) {
+			t.Fatalf("function output missing from continuation: %s", encoded)
+		}
+		_, _ = writer.Write([]byte(`{"id":"resp_2","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"remembered"}]}]}`))
+	}))
+	defer server.Close()
+
+	provider := NewOpenAIProvider("secret", "test-model", server.URL, "test", false)
+	provider.client = server.Client()
+	request := sampleRequest()
+	request.Tools = []ToolDefinition{{Name: "memory_remember", Description: "remember", Parameters: map[string]any{"type": "object"}}}
+	first, err := provider.Turn(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first.ToolCalls) != 1 || string(first.ToolCalls[0].Arguments) != `{"content":"remember this"}` {
+		t.Fatalf("unexpected tool call: %#v", first.ToolCalls)
+	}
+	request.Exchanges = []ToolExchange{{Calls: first.ToolCalls, ProviderItems: first.ProviderItems, Outputs: []ToolOutput{{CallID: "call_1", Output: `{"stored":true}`}}}}
+	second, err := provider.Turn(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Text != "remembered" {
+		t.Fatalf("response = %q", second.Text)
+	}
+}
+
+func TestToolStrictDefaultsToTrueAndCanBeDisabled(t *testing.T) {
+	if !toolStrict(ToolDefinition{}) {
+		t.Fatal("local tools should default to strict schemas")
+	}
+	strict := false
+	if toolStrict(ToolDefinition{Strict: &strict}) {
+		t.Fatal("remote MCP schemas must be able to disable strict mode")
 	}
 }
 

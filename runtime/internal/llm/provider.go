@@ -14,11 +14,52 @@ import (
 	"github.com/quanyejun/quanyejun/runtime/internal/domain"
 )
 
+type ToolDefinition struct {
+	Name        string         `json:"name"`
+	Description string         `json:"description"`
+	Parameters  map[string]any `json:"parameters"`
+	Strict      *bool          `json:"-"`
+}
+
+type ToolCall struct {
+	ID        string          `json:"id"`
+	Name      string          `json:"name"`
+	Arguments json.RawMessage `json:"arguments"`
+}
+
+type ToolOutput struct {
+	CallID string `json:"callId"`
+	Output string `json:"output"`
+}
+
+type ToolExchange struct {
+	Calls         []ToolCall        `json:"calls"`
+	Outputs       []ToolOutput      `json:"outputs"`
+	ProviderItems []json.RawMessage `json:"providerItems,omitempty"`
+}
+
 type Request struct {
 	ActorID      string
 	IdentityName string
 	Messages     []domain.Message
 	Memories     []domain.Memory
+	Tools        []ToolDefinition
+	Exchanges    []ToolExchange
+}
+
+type Usage struct {
+	InputTokens  int `json:"inputTokens"`
+	OutputTokens int `json:"outputTokens"`
+	TotalTokens  int `json:"totalTokens"`
+}
+
+type Result struct {
+	Text               string
+	ToolCalls          []ToolCall
+	ProviderResponseID string
+	ProviderItems      []json.RawMessage
+	Usage              Usage
+	StopReason         string
 }
 
 type ProviderInfo struct {
@@ -29,36 +70,38 @@ type ProviderInfo struct {
 }
 
 type Provider interface {
-	Generate(context.Context, Request) (string, error)
+	Turn(context.Context, Request) (Result, error)
 	Name() string
 	Info() ProviderInfo
 }
 
-type BuiltinProvider struct {
-	info ProviderInfo
-}
+type BuiltinProvider struct{ info ProviderInfo }
 
 func NewBuiltinProvider() *BuiltinProvider {
 	return &BuiltinProvider{info: ProviderInfo{ID: "builtin", Label: "Built-in preview", Source: "fallback"}}
 }
 
-// NewLocalProvider is kept for callers that used the original deterministic
-// preview provider. A real local model is represented by local-openai.
-func NewLocalProvider() *BuiltinProvider { return NewBuiltinProvider() }
-func (p *BuiltinProvider) Name() string  { return p.info.ID }
-func (p *BuiltinProvider) Info() ProviderInfo {
-	return p.info
-}
-func (*BuiltinProvider) Generate(_ context.Context, request Request) (string, error) {
+func NewLocalProvider() *BuiltinProvider      { return NewBuiltinProvider() }
+func (p *BuiltinProvider) Name() string       { return p.info.ID }
+func (p *BuiltinProvider) Info() ProviderInfo { return p.info }
+
+func (*BuiltinProvider) Turn(_ context.Context, request Request) (Result, error) {
 	identityName := domain.NormalizeDisplayName(request.IdentityName)
+	if len(request.Exchanges) > 0 {
+		return Result{Text: "알겠어요. 이 내용은 대화 기록과 별도의 기억으로 남겨두었습니다.", StopReason: "completed"}, nil
+	}
 	if len(request.Messages) == 0 {
-		return fmt.Sprintf("%s입니다. 무엇을 함께 해볼까요?", identityName), nil
+		return Result{Text: fmt.Sprintf("%s입니다. 무엇을 함께 해볼까요?", identityName), StopReason: "completed"}, nil
 	}
 	latest := request.Messages[len(request.Messages)-1].Content
-	if strings.Contains(latest, "기억해") {
-		return "알겠어요. 이 내용은 대화 기록과 별도로 기억에 남겨두었습니다.", nil
+	if containsRememberIntent(latest) && hasTool(request.Tools, "memory_remember") {
+		arguments, _ := json.Marshal(map[string]string{"content": latest})
+		return Result{ToolCalls: []ToolCall{{ID: "builtin-memory", Name: "memory_remember", Arguments: arguments}}, StopReason: "tool_call"}, nil
 	}
-	return fmt.Sprintf("말씀하신 내용을 이어서 이해했어요: “%s”\n\n현재 %s는 내장 미리보기 응답기를 사용 중입니다. 로컬 모델, Claude API/Code, OpenAI API 또는 Codex CLI가 준비되면 Identity와 기억은 그대로 둔 채 자동으로 추론 엔진을 교체합니다.", latest, identityName), nil
+	return Result{
+		Text:       fmt.Sprintf("말씀하신 내용을 이어서 이해했어요: “%s”\n\n현재 %s는 API 런타임의 내장 미리보기 응답기를 사용 중입니다.", latest, identityName),
+		StopReason: "completed",
+	}, nil
 }
 
 type ChatCompletionsProvider struct {
@@ -70,98 +113,150 @@ type ChatCompletionsProvider struct {
 
 func NewLocalOpenAIProvider(apiKey, model, baseURL, source string) *ChatCompletionsProvider {
 	return &ChatCompletionsProvider{
-		info:   ProviderInfo{ID: "local", Label: "Local LLM", Model: model, Source: source},
-		apiKey: apiKey,
-		url:    endpoint(baseURL, "chat/completions"),
-		client: defaultHTTPClient(),
+		info:   ProviderInfo{ID: "local", Label: "Local HTTP API", Model: model, Source: source},
+		apiKey: apiKey, url: endpoint(baseURL, "chat/completions"), client: defaultHTTPClient(),
 	}
 }
 
 func (p *ChatCompletionsProvider) Name() string       { return p.info.ID }
 func (p *ChatCompletionsProvider) Info() ProviderInfo { return p.info }
 
-func (p *ChatCompletionsProvider) Generate(ctx context.Context, input Request) (string, error) {
-	messages := []map[string]string{{"role": "system", "content": systemPrompt(input.IdentityName, input.Memories)}}
+func (p *ChatCompletionsProvider) Turn(ctx context.Context, input Request) (Result, error) {
+	messages := []any{map[string]any{"role": "system", "content": systemPrompt(input.IdentityName, input.Memories)}}
 	for _, message := range input.Messages {
-		messages = append(messages, map[string]string{"role": message.Role, "content": message.Content})
+		messages = append(messages, map[string]any{"role": message.Role, "content": message.Content})
 	}
-	payload := map[string]any{"model": p.info.Model, "messages": messages, "temperature": 0.4}
-	var result struct {
+	for _, exchange := range input.Exchanges {
+		toolCalls := make([]map[string]any, 0, len(exchange.Calls))
+		for _, call := range exchange.Calls {
+			toolCalls = append(toolCalls, map[string]any{"id": call.ID, "type": "function", "function": map[string]any{"name": call.Name, "arguments": string(call.Arguments)}})
+		}
+		messages = append(messages, map[string]any{"role": "assistant", "tool_calls": toolCalls})
+		for _, output := range exchange.Outputs {
+			messages = append(messages, map[string]any{"role": "tool", "tool_call_id": output.CallID, "content": output.Output})
+		}
+	}
+	payload := map[string]any{"model": p.info.Model, "messages": messages}
+	if len(input.Tools) > 0 {
+		payload["tools"] = chatTools(input.Tools)
+	}
+	var response struct {
 		Choices []struct {
-			Message struct {
-				Content string `json:"content"`
+			FinishReason string `json:"finish_reason"`
+			Message      struct {
+				Content   string `json:"content"`
+				ToolCalls []struct {
+					ID       string                           `json:"id"`
+					Function struct{ Name, Arguments string } `json:"function"`
+				} `json:"tool_calls"`
 			} `json:"message"`
 		} `json:"choices"`
+		Usage struct {
+			PromptTokens     int `json:"prompt_tokens"`
+			CompletionTokens int `json:"completion_tokens"`
+			TotalTokens      int `json:"total_tokens"`
+		} `json:"usage"`
 	}
-	if err := postJSON(ctx, p.client, p.url, p.apiKey, nil, payload, &result); err != nil {
-		return "", err
+	if err := postJSON(ctx, p.client, p.url, p.apiKey, nil, payload, &response); err != nil {
+		return Result{}, err
 	}
-	if len(result.Choices) == 0 || strings.TrimSpace(result.Choices[0].Message.Content) == "" {
-		return "", fmt.Errorf("provider returned an empty response")
+	if len(response.Choices) == 0 {
+		return Result{}, fmt.Errorf("provider returned no choices")
 	}
-	return strings.TrimSpace(result.Choices[0].Message.Content), nil
+	choice := response.Choices[0]
+	result := Result{Text: strings.TrimSpace(choice.Message.Content), StopReason: choice.FinishReason, Usage: Usage{InputTokens: response.Usage.PromptTokens, OutputTokens: response.Usage.CompletionTokens, TotalTokens: response.Usage.TotalTokens}}
+	for _, call := range choice.Message.ToolCalls {
+		result.ToolCalls = append(result.ToolCalls, ToolCall{ID: call.ID, Name: call.Function.Name, Arguments: json.RawMessage(call.Function.Arguments)})
+	}
+	if result.Text == "" && len(result.ToolCalls) == 0 {
+		return Result{}, fmt.Errorf("provider returned an empty response")
+	}
+	return result, nil
 }
 
 type OpenAIProvider struct {
 	info   ProviderInfo
 	apiKey string
 	url    string
+	store  bool
 	client *http.Client
 }
 
-func NewOpenAIProvider(apiKey, model, baseURL, source string) *OpenAIProvider {
-	return &OpenAIProvider{
-		info:   ProviderInfo{ID: "openai-api", Label: "OpenAI API", Model: model, Source: source},
-		apiKey: apiKey,
-		url:    endpoint(baseURL, "responses"),
-		client: defaultHTTPClient(),
-	}
+func NewOpenAIProvider(apiKey, model, baseURL, source string, store bool) *OpenAIProvider {
+	return &OpenAIProvider{info: ProviderInfo{ID: "openai", Label: "OpenAI API", Model: model, Source: source}, apiKey: apiKey, url: endpoint(baseURL, "responses"), store: store, client: defaultHTTPClient()}
 }
 
 func (p *OpenAIProvider) Name() string       { return p.info.ID }
 func (p *OpenAIProvider) Info() ProviderInfo { return p.info }
 
-func (p *OpenAIProvider) Generate(ctx context.Context, input Request) (string, error) {
-	messages := make([]map[string]string, 0, len(input.Messages))
+func (p *OpenAIProvider) Turn(ctx context.Context, input Request) (Result, error) {
+	items := make([]any, 0, len(input.Messages)+len(input.Exchanges)*2)
 	for _, message := range input.Messages {
-		messages = append(messages, map[string]string{"role": message.Role, "content": message.Content})
+		items = append(items, map[string]any{"role": message.Role, "content": message.Content})
 	}
-	payload := map[string]any{
-		"model":        p.info.Model,
-		"instructions": systemPrompt(input.IdentityName, input.Memories),
-		"input":        messages,
+	for _, exchange := range input.Exchanges {
+		for _, raw := range exchange.ProviderItems {
+			var item any
+			if json.Unmarshal(raw, &item) == nil {
+				items = append(items, item)
+			}
+		}
+		for _, output := range exchange.Outputs {
+			items = append(items, map[string]any{"type": "function_call_output", "call_id": output.CallID, "output": output.Output})
+		}
 	}
-	var result struct {
-		OutputText string `json:"output_text"`
-		Output     []struct {
-			Content []struct {
-				Text string `json:"text"`
-			} `json:"content"`
-		} `json:"output"`
+	payload := map[string]any{"model": p.info.Model, "instructions": systemPrompt(input.IdentityName, input.Memories), "input": items, "store": p.store}
+	if len(input.Tools) > 0 {
+		payload["tools"] = responseTools(input.Tools)
 	}
-	if err := postJSON(ctx, p.client, p.url, p.apiKey, nil, payload, &result); err != nil {
-		return "", err
+	var response struct {
+		ID     string            `json:"id"`
+		Output []json.RawMessage `json:"output"`
+		Usage  struct {
+			InputTokens  int `json:"input_tokens"`
+			OutputTokens int `json:"output_tokens"`
+			TotalTokens  int `json:"total_tokens"`
+		} `json:"usage"`
+		Status string `json:"status"`
 	}
-	if text := strings.TrimSpace(result.OutputText); text != "" {
-		return text, nil
+	if err := postJSON(ctx, p.client, p.url, p.apiKey, nil, payload, &response); err != nil {
+		return Result{}, err
 	}
-	for _, output := range result.Output {
-		for _, content := range output.Content {
-			if text := strings.TrimSpace(content.Text); text != "" {
-				return text, nil
+	result := Result{ProviderResponseID: response.ID, ProviderItems: response.Output, StopReason: response.Status, Usage: Usage{InputTokens: response.Usage.InputTokens, OutputTokens: response.Usage.OutputTokens, TotalTokens: response.Usage.TotalTokens}}
+	for _, raw := range response.Output {
+		var item struct {
+			Type      string                        `json:"type"`
+			CallID    string                        `json:"call_id"`
+			Name      string                        `json:"name"`
+			Arguments string                        `json:"arguments"`
+			Content   []struct{ Type, Text string } `json:"content"`
+		}
+		if err := json.Unmarshal(raw, &item); err != nil {
+			return Result{}, fmt.Errorf("decode OpenAI output item: %w", err)
+		}
+		switch item.Type {
+		case "function_call":
+			result.ToolCalls = append(result.ToolCalls, ToolCall{ID: item.CallID, Name: item.Name, Arguments: json.RawMessage(item.Arguments)})
+		case "message":
+			for _, content := range item.Content {
+				if content.Type == "output_text" {
+					result.Text += content.Text
+				}
 			}
 		}
 	}
-	return "", fmt.Errorf("provider returned an empty response")
+	result.Text = strings.TrimSpace(result.Text)
+	if result.Text == "" && len(result.ToolCalls) == 0 {
+		return Result{}, fmt.Errorf("provider returned an empty response")
+	}
+	return result, nil
 }
 
 type AnthropicProvider struct {
-	info       ProviderInfo
-	apiKey     string
-	url        string
-	maxTokens  int
-	apiVersion string
-	client     *http.Client
+	info                    ProviderInfo
+	apiKey, url, apiVersion string
+	maxTokens               int
+	client                  *http.Client
 }
 
 func NewAnthropicProvider(apiKey, model, baseURL, source string, maxTokens int) *AnthropicProvider {
@@ -172,54 +267,99 @@ func NewAnthropicProvider(apiKey, model, baseURL, source string, maxTokens int) 
 	if !strings.HasSuffix(baseURL, "/v1") {
 		baseURL += "/v1"
 	}
-	return &AnthropicProvider{
-		info:       ProviderInfo{ID: "claude-api", Label: "Claude API", Model: model, Source: source},
-		apiKey:     apiKey,
-		url:        baseURL + "/messages",
-		maxTokens:  maxTokens,
-		apiVersion: "2023-06-01",
-		client:     defaultHTTPClient(),
-	}
+	return &AnthropicProvider{info: ProviderInfo{ID: "anthropic", Label: "Anthropic API", Model: model, Source: source}, apiKey: apiKey, url: baseURL + "/messages", maxTokens: maxTokens, apiVersion: "2023-06-01", client: defaultHTTPClient()}
 }
 
 func (p *AnthropicProvider) Name() string       { return p.info.ID }
 func (p *AnthropicProvider) Info() ProviderInfo { return p.info }
 
-func (p *AnthropicProvider) Generate(ctx context.Context, input Request) (string, error) {
-	messages := make([]map[string]string, 0, len(input.Messages))
+func (p *AnthropicProvider) Turn(ctx context.Context, input Request) (Result, error) {
+	messages := make([]any, 0, len(input.Messages)+len(input.Exchanges)*2)
 	for _, message := range input.Messages {
 		if message.Role == "user" || message.Role == "assistant" {
-			messages = append(messages, map[string]string{"role": message.Role, "content": message.Content})
+			messages = append(messages, map[string]any{"role": message.Role, "content": message.Content})
 		}
 	}
-	payload := map[string]any{
-		"model":      p.info.Model,
-		"max_tokens": p.maxTokens,
-		"system":     systemPrompt(input.IdentityName, input.Memories),
-		"messages":   messages,
+	for _, exchange := range input.Exchanges {
+		uses := make([]any, 0, len(exchange.Calls))
+		for _, call := range exchange.Calls {
+			var arguments any
+			if err := json.Unmarshal(call.Arguments, &arguments); err != nil {
+				return Result{}, fmt.Errorf("decode tool arguments: %w", err)
+			}
+			uses = append(uses, map[string]any{"type": "tool_use", "id": call.ID, "name": call.Name, "input": arguments})
+		}
+		messages = append(messages, map[string]any{"role": "assistant", "content": uses})
+		outputs := make([]any, 0, len(exchange.Outputs))
+		for _, output := range exchange.Outputs {
+			outputs = append(outputs, map[string]any{"type": "tool_result", "tool_use_id": output.CallID, "content": output.Output})
+		}
+		messages = append(messages, map[string]any{"role": "user", "content": outputs})
 	}
-	var result struct {
-		Content []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
+	payload := map[string]any{"model": p.info.Model, "max_tokens": p.maxTokens, "system": systemPrompt(input.IdentityName, input.Memories), "messages": messages}
+	if len(input.Tools) > 0 {
+		tools := make([]map[string]any, 0, len(input.Tools))
+		for _, tool := range input.Tools {
+			tools = append(tools, map[string]any{"name": tool.Name, "description": tool.Description, "input_schema": tool.Parameters})
+		}
+		payload["tools"] = tools
+	}
+	var response struct {
+		ID         string `json:"id"`
+		StopReason string `json:"stop_reason"`
+		Content    []struct {
+			Type, Text, ID, Name string
+			Input                json.RawMessage `json:"input"`
 		} `json:"content"`
+		Usage struct {
+			InputTokens  int `json:"input_tokens"`
+			OutputTokens int `json:"output_tokens"`
+		} `json:"usage"`
 	}
 	headers := map[string]string{"x-api-key": p.apiKey, "anthropic-version": p.apiVersion}
-	if err := postJSON(ctx, p.client, p.url, "", headers, payload, &result); err != nil {
-		return "", err
+	if err := postJSON(ctx, p.client, p.url, "", headers, payload, &response); err != nil {
+		return Result{}, err
 	}
-	for _, content := range result.Content {
-		if content.Type == "text" && strings.TrimSpace(content.Text) != "" {
-			return strings.TrimSpace(content.Text), nil
+	result := Result{ProviderResponseID: response.ID, StopReason: response.StopReason, Usage: Usage{InputTokens: response.Usage.InputTokens, OutputTokens: response.Usage.OutputTokens, TotalTokens: response.Usage.InputTokens + response.Usage.OutputTokens}}
+	for _, content := range response.Content {
+		switch content.Type {
+		case "text":
+			result.Text += content.Text
+		case "tool_use":
+			result.ToolCalls = append(result.ToolCalls, ToolCall{ID: content.ID, Name: content.Name, Arguments: content.Input})
 		}
 	}
-	return "", fmt.Errorf("provider returned an empty response")
+	result.Text = strings.TrimSpace(result.Text)
+	if result.Text == "" && len(result.ToolCalls) == 0 {
+		return Result{}, fmt.Errorf("provider returned an empty response")
+	}
+	return result, nil
 }
 
-func defaultHTTPClient() *http.Client {
-	return &http.Client{Timeout: 90 * time.Second}
+func responseTools(definitions []ToolDefinition) []map[string]any {
+	tools := make([]map[string]any, 0, len(definitions))
+	for _, definition := range definitions {
+		tools = append(tools, map[string]any{"type": "function", "name": definition.Name, "description": definition.Description, "parameters": definition.Parameters, "strict": toolStrict(definition)})
+	}
+	return tools
 }
 
+func chatTools(definitions []ToolDefinition) []map[string]any {
+	tools := make([]map[string]any, 0, len(definitions))
+	for _, definition := range definitions {
+		tools = append(tools, map[string]any{"type": "function", "function": map[string]any{"name": definition.Name, "description": definition.Description, "parameters": definition.Parameters, "strict": toolStrict(definition)}})
+	}
+	return tools
+}
+
+func toolStrict(definition ToolDefinition) bool {
+	if definition.Strict == nil {
+		return true
+	}
+	return *definition.Strict
+}
+
+func defaultHTTPClient() *http.Client { return &http.Client{Timeout: 90 * time.Second} }
 func endpoint(baseURL, path string) string {
 	return strings.TrimRight(baseURL, "/") + "/" + strings.TrimLeft(path, "/")
 }
@@ -261,9 +401,9 @@ func postJSON(ctx context.Context, client *http.Client, url, bearer string, head
 func systemPrompt(identityName string, memories []domain.Memory) string {
 	identityName = domain.NormalizeDisplayName(identityName)
 	var builder strings.Builder
-	builder.WriteString("You are the current reasoning engine for one persistent identity in the QuanYejun project. Your display name is ")
+	builder.WriteString("You are the reasoning engine for one persistent identity in the QuanYejun project. Your display name is ")
 	builder.WriteString(strconv.Quote(identityName))
-	builder.WriteString(". When referring to yourself by name, always use that display name. Reply in the user's language. Be concise and natural. You are not a separate chat persona. Relevant persistent memories:\n")
+	builder.WriteString(". Reply in the user's language. Use only the tools provided for this run. Tool availability is not permission to invent other actions. Return a final user-facing answer after tool results. Relevant persistent memories:\n")
 	for _, memory := range memories {
 		builder.WriteString("- ")
 		builder.WriteString(memory.Content)
@@ -272,15 +412,16 @@ func systemPrompt(identityName string, memories []domain.Memory) string {
 	return builder.String()
 }
 
-func cliPrompt(input Request) string {
-	var builder strings.Builder
-	builder.WriteString(systemPrompt(input.IdentityName, input.Memories))
-	builder.WriteString("\nThis is a text-generation request. Do not inspect or modify files, call tools, browse, or execute commands. Return only the reply to the user.\n\nConversation:\n")
-	for _, message := range input.Messages {
-		builder.WriteString(message.Role)
-		builder.WriteString(": ")
-		builder.WriteString(message.Content)
-		builder.WriteByte('\n')
+func hasTool(tools []ToolDefinition, name string) bool {
+	for _, tool := range tools {
+		if tool.Name == name {
+			return true
+		}
 	}
-	return builder.String()
+	return false
+}
+
+func containsRememberIntent(value string) bool {
+	value = strings.ToLower(value)
+	return strings.Contains(value, "기억해") || strings.Contains(value, "remember")
 }

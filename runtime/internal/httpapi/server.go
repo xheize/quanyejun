@@ -10,6 +10,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
+	"github.com/quanyejun/quanyejun/runtime/internal/agent"
 	"github.com/quanyejun/quanyejun/runtime/internal/domain"
 	"github.com/quanyejun/quanyejun/runtime/internal/environment"
 	"github.com/quanyejun/quanyejun/runtime/internal/eventhub"
@@ -22,18 +23,19 @@ type Server struct {
 	store          store.Store
 	hub            *eventhub.Hub
 	provider       llm.Provider
-	runner         *tasks.Runner
+	agentRunner    *agent.Runner
+	taskRunner     *tasks.Runner
 	displayName    string
 	environment    environment.Environment
 	allowedOrigins map[string]struct{}
 }
 
-func New(store store.Store, hub *eventhub.Hub, provider llm.Provider, runner *tasks.Runner, origins []string, displayName string, executionEnvironment environment.Environment) *Server {
+func New(store store.Store, hub *eventhub.Hub, provider llm.Provider, agentRunner *agent.Runner, taskRunner *tasks.Runner, origins []string, displayName string, executionEnvironment environment.Environment) *Server {
 	allowed := make(map[string]struct{}, len(origins))
 	for _, origin := range origins {
 		allowed[strings.TrimSpace(origin)] = struct{}{}
 	}
-	return &Server{store: store, hub: hub, provider: provider, runner: runner, displayName: domain.NormalizeDisplayName(displayName), environment: executionEnvironment, allowedOrigins: allowed}
+	return &Server{store: store, hub: hub, provider: provider, agentRunner: agentRunner, taskRunner: taskRunner, displayName: domain.NormalizeDisplayName(displayName), environment: executionEnvironment, allowedOrigins: allowed}
 }
 
 func (s *Server) Handler() http.Handler {
@@ -43,6 +45,7 @@ func (s *Server) Handler() http.Handler {
 	router.GET("/api/bootstrap", s.bootstrap)
 	router.GET("/api/environment", s.environmentInfo)
 	router.POST("/api/messages", s.createMessage)
+	router.GET("/api/runs/:id", s.getRun)
 	router.POST("/api/tasks/demo", s.createDemoTask)
 	router.GET("/api/events", s.listEvents)
 	router.GET("/ws", s.websocket)
@@ -118,6 +121,11 @@ func (s *Server) bootstrap(c *gin.Context) {
 		fail(c, err)
 		return
 	}
+	runs, err := s.store.ListAgentRuns(c.Request.Context(), actorID, 8)
+	if err != nil {
+		fail(c, err)
+		return
+	}
 	events, err := s.store.ListEventsAfter(c.Request.Context(), "", 30)
 	if err != nil {
 		fail(c, err)
@@ -128,7 +136,7 @@ func (s *Server) bootstrap(c *gin.Context) {
 		fail(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"identity": identity, "environment": environmentInfo, "provider": s.provider.Info(), "messages": messages, "memories": memories, "tasks": tasksList, "events": events})
+	c.JSON(http.StatusOK, gin.H{"identity": identity, "environment": environmentInfo, "provider": s.provider.Info(), "messages": messages, "memories": memories, "tasks": tasksList, "runs": runs, "events": events})
 }
 
 type messageInput struct {
@@ -161,43 +169,27 @@ func (s *Server) createMessage(c *gin.Context) {
 		fail(c, err)
 		return
 	}
-	if strings.Contains(strings.ToLower(input.Content), "기억해") || strings.Contains(strings.ToLower(input.Content), "remember") {
-		memory := domain.Memory{ID: uuid.NewString(), ActorID: input.ActorID, Content: input.Content, CreatedAt: now}
-		if err := s.store.AddMemory(c.Request.Context(), memory); err != nil {
-			fail(c, err)
-			return
-		}
-		if err := s.emit(c.Request.Context(), "memory.created", "runtime", input.ActorID, map[string]any{"memory": memory}); err != nil {
-			fail(c, err)
-			return
-		}
+	run, err := s.agentRunner.Start(input.ActorID, userMessage.ID, input.Content)
+	if err != nil {
+		slog.Error("agent run creation failed", "provider", s.provider.Name(), "error", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "agent run creation failed"})
+		return
 	}
-	messages, err := s.store.ListMessages(c.Request.Context(), input.ActorID, 10)
+	c.JSON(http.StatusAccepted, gin.H{"userMessage": userMessage, "runId": run.ID, "run": run})
+}
+
+func (s *Server) getRun(c *gin.Context) {
+	run, err := s.store.GetAgentRun(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "run not found"})
+		return
+	}
+	steps, err := s.store.ListRunSteps(c.Request.Context(), run.ID)
 	if err != nil {
 		fail(c, err)
 		return
 	}
-	memories, err := s.store.ListMemories(c.Request.Context(), input.ActorID, 5)
-	if err != nil {
-		fail(c, err)
-		return
-	}
-	responseText, err := s.provider.Generate(c.Request.Context(), llm.Request{ActorID: input.ActorID, IdentityName: s.displayName, Messages: messages, Memories: memories})
-	if err != nil {
-		slog.Error("reasoning engine failed", "provider", s.provider.Name(), "error", err)
-		c.JSON(http.StatusBadGateway, gin.H{"error": "reasoning engine failed"})
-		return
-	}
-	assistantMessage := domain.Message{ID: uuid.NewString(), ActorID: input.ActorID, ConversationID: domain.ConversationID, Role: "assistant", Content: responseText, CreatedAt: time.Now().UTC()}
-	if err := s.store.AddMessage(c.Request.Context(), assistantMessage); err != nil {
-		fail(c, err)
-		return
-	}
-	if err := s.emit(c.Request.Context(), "chat.message", "llm", input.ActorID, map[string]any{"message": assistantMessage}); err != nil {
-		fail(c, err)
-		return
-	}
-	c.JSON(http.StatusCreated, gin.H{"userMessage": userMessage, "assistantMessage": assistantMessage})
+	c.JSON(http.StatusOK, gin.H{"run": run, "steps": steps})
 }
 
 type taskInput struct {
@@ -217,7 +209,7 @@ func (s *Server) createDemoTask(c *gin.Context) {
 	if input.DurationSeconds > 120 {
 		input.DurationSeconds = 120
 	}
-	task, err := s.runner.StartDemo(input.ActorID, time.Duration(input.DurationSeconds)*time.Second)
+	task, err := s.taskRunner.StartDemo(input.ActorID, time.Duration(input.DurationSeconds)*time.Second)
 	if err != nil {
 		fail(c, err)
 		return
