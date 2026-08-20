@@ -26,6 +26,7 @@ COPY --chown=root:quanyejun --chmod=0640 config/mcp-servers.example.json /etc/qu
 COPY --chown=root:quanyejun --chmod=0640 config/mcp-authority.example.json /etc/quanyejun/mcp-authority.json
 COPY --chown=quanyejun:quanyejun skills/ /opt/quanyejun/skills/
 ENV PORT=8080 \
+    GIN_MODE=release \
     QUANYEJUN_ENVIRONMENT_KIND=container \
     QUANYEJUN_ENVIRONMENT_PROFILE=server \
     QUANYEJUN_RUNTIME_ROOT=/var/lib/quanyejun \
@@ -47,7 +48,7 @@ ENV PNPM_HOME=/pnpm
 ENV PATH=$PNPM_HOME:$PATH
 WORKDIR /app
 RUN corepack enable && corepack prepare pnpm@11.19.0 --activate
-COPY package.json pnpm-lock.yaml ./
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 RUN --mount=type=cache,id=pnpm,target=/pnpm/store pnpm install --frozen-lockfile
 COPY . ./
 ARG NEXT_PUBLIC_RUNTIME_URL=http://localhost:8080
@@ -55,16 +56,13 @@ ENV NEXT_PUBLIC_RUNTIME_URL=$NEXT_PUBLIC_RUNTIME_URL
 RUN pnpm build
 
 FROM node:22-bookworm-slim AS web
-ENV PNPM_HOME=/pnpm \
-    PATH=/pnpm:$PATH \
-    NODE_ENV=production \
+ENV NODE_ENV=production \
     HOST=0.0.0.0 \
     PORT=3000
 WORKDIR /app
-RUN corepack enable && corepack prepare pnpm@11.19.0 --activate
 COPY --from=web-build --chown=node:node /app /app
 USER node
 EXPOSE 3000
 HEALTHCHECK --interval=10s --timeout=3s --start-period=15s --retries=5 \
   CMD ["node", "-e", "fetch('http://127.0.0.1:3000/').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
-CMD ["pnpm", "start"]
+CMD ["node", "node_modules/vinext/dist/cli.js", "start"]
