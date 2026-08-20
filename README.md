@@ -60,6 +60,26 @@ skills/             Provider 독립적인 로컬 SKILL.md 예제
 
 웹은 `http://localhost:3000`, 런타임은 `http://localhost:8080`에서 실행됩니다. PostgreSQL 없이 런타임만 실행하면 메모리 저장소를 사용하므로 동작은 확인할 수 있지만 재시작 후 데이터는 사라집니다.
 
+### Docker Compose로 전체 실행
+
+루트 `Dockerfile`은 `web`과 `runtime` 멀티스테이지 타깃을 제공하며 `compose.yaml`은 두 서비스와 PostgreSQL을 함께 실행합니다.
+
+```powershell
+docker compose up --build
+```
+
+기본 접속 주소는 웹 `http://localhost:3000`, API `http://localhost:8080`입니다. 브라우저가 API에 접근할 공개 주소가 다르면 이미지를 빌드하기 전에 `NEXT_PUBLIC_RUNTIME_URL`을 설정하세요. 모델 Provider와 API 키도 `.env` 또는 현재 셸 환경 변수로 전달할 수 있으며 기본값은 네트워크 키가 필요 없는 `builtin`입니다.
+
+```powershell
+$env:NEXT_PUBLIC_RUNTIME_URL = "https://runtime.example.com"
+$env:LLM_PROVIDER = "openai"
+$env:OPENAI_API_KEY = "..."
+$env:OPENAI_MODEL = "..."
+docker compose up --build
+```
+
+PostgreSQL, Identity workspace, cache, 관리자 설정은 각각 Docker volume에 유지됩니다. `quanyejun-config` volume은 최초 생성 시 비활성화된 MCP 예제로 초기화되며, 실제 연결을 사용할 때 `/etc/quanyejun/mcp-servers.json`과 `/etc/quanyejun/mcp-authority.json`을 관리자가 수정하면 됩니다. `.dockerignore`는 로컬 의존성, 빌드 결과, 런타임 데이터, 비밀 설정을 빌드 컨텍스트에서 제외합니다.
+
 ## Identity 표기명 변경
 
 프로젝트 이름과 내부 ID `identity_quanyejun`은 고정하고, 화면과 대화에서 자신을 부르는 이름만 바꿀 수 있습니다. 런타임을 시작하기 전에 다음 값을 설정합니다.

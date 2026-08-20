@@ -16,5 +16,58 @@ services:
       timeout: 3s
       retries: 10
 
+  runtime:
+    build:
+      context: .
+      target: runtime
+    environment:
+      PORT: 8080
+      DATABASE_URL: postgres://quanyejun:quanyejun@postgres:5432/quanyejun?sslmode=disable
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3000}
+      IDENTITY_DISPLAY_NAME: ${IDENTITY_DISPLAY_NAME:-QuanYejun}
+      LLM_PROVIDER: ${LLM_PROVIDER:-builtin}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
+      OPENAI_STORE: ${OPENAI_STORE:-false}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-}
+      LOCAL_LLM_BASE_URL: ${LOCAL_LLM_BASE_URL:-http://host.docker.internal:11434/v1}
+      LOCAL_LLM_MODEL: ${LOCAL_LLM_MODEL:-}
+      QUANYEJUN_ENVIRONMENT_ALLOW: read-files,write-files
+    ports:
+      - "8080:8080"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - quanyejun-runtime:/var/lib/quanyejun
+      - quanyejun-cache:/var/cache/quanyejun
+      - quanyejun-config:/etc/quanyejun
+    depends_on:
+      postgres:
+        condition: service_healthy
+    init: true
+    restart: unless-stopped
+
+  web:
+    build:
+      context: .
+      target: web
+      args:
+        NEXT_PUBLIC_RUNTIME_URL: ${NEXT_PUBLIC_RUNTIME_URL:-http://localhost:8080}
+    environment:
+      HOST: 0.0.0.0
+      PORT: 3000
+    ports:
+      - "3000:3000"
+    depends_on:
+      runtime:
+        condition: service_healthy
+    init: true
+    restart: unless-stopped
+
 volumes:
   quanyejun-postgres:
+  quanyejun-runtime:
+  quanyejun-cache:
+  quanyejun-config:
