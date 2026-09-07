@@ -62,10 +62,17 @@ skills/             Provider 독립적인 로컬 SKILL.md 예제
 
 ### Docker Compose로 전체 실행
 
-루트 `Dockerfile`은 `web`과 `runtime` 멀티스테이지 타깃을 제공하며 `compose.yaml`은 두 서비스와 PostgreSQL을 함께 실행합니다.
+루트의 `Dockerfile.frontend`는 웹 UI(Node.js, 포트 3000), `Dockerfile.backend`는 Go 런타임(API, 포트 8080)을 각각 빌드합니다. 두 파일 모두 저장소 루트를 빌드 컨텍스트로 사용하며, `compose.yaml`은 각 Dockerfile로 두 서비스와 PostgreSQL을 함께 실행합니다.
 
 ```powershell
 docker compose up --build
+```
+
+이미지를 개별 빌드하려면 저장소 루트에서 실행합니다.
+
+```powershell
+docker build -f Dockerfile.backend -t quanyejun-backend .
+docker build -f Dockerfile.frontend -t quanyejun-frontend --build-arg NEXT_PUBLIC_RUNTIME_URL=http://localhost:8080 .
 ```
 
 기본 접속 주소는 웹 `http://localhost:3000`, API `http://localhost:8080`입니다. 브라우저가 API에 접근할 공개 주소가 다르면 이미지를 빌드하기 전에 `NEXT_PUBLIC_RUNTIME_URL`을 설정하세요. 모델 Provider와 API 키도 `.env` 또는 현재 셸 환경 변수로 전달할 수 있으며 기본값은 네트워크 키가 필요 없는 `builtin`입니다.
