@@ -95,7 +95,9 @@ go run ./cmd/server
 
 Identity 코어는 LXC, Docker, Kubernetes API를 직접 호출하지 않습니다. 대신 `Environment` 인터페이스를 통해 영속 `home`, `workspace`, `config`, `cache`, 셸 실행, 도구 탐색을 사용합니다. 현재 구현은 같은 OS에서 실행하는 `local` 어댑터이며, LXC 안에서 실행할 때도 동일한 코드를 쓰고 환경 변수로 `kind=lxc`와 영속 경로를 지정합니다.
 
-도구의 설치 여부인 capability와 실제 사용 허가인 authority는 분리되어 있습니다. `QUANYEJUN_ENVIRONMENT_ALLOW`에 명시된 capability만 실행 경계가 허용합니다. 현재 모델에 노출되는 도구는 워크스페이스 텍스트 읽기와 명시적 기억 저장뿐이며 임의 셸·파일 쓰기는 노출하지 않습니다.
+도구의 설치 여부인 capability와 실제 사용 허가인 authority는 분리되어 있습니다. `QUANYEJUN_ENVIRONMENT_ALLOW`에 `shell`이 포함된 환경에서는 모델에 `environment_inspect`와 `environment_exec`가 노출됩니다. 모델은 설치된 CLI를 탐색하고, 게스트 OS 권한이 허용하면 `apt`, `npm`, `pip` 같은 패키지 관리자를 사용하며, 명령을 워크스페이스 또는 격리된 임시 디렉터리에서 실행할 수 있습니다. 명령은 executable과 args를 분리해 전달하고, 셸 문법이 필요할 때만 `sh -lc`나 `pwsh -Command`를 명시적으로 실행합니다.
+
+`environment_exec`는 작업 디렉터리를 워크스페이스 안으로 제한하고 stdin, 인자 수, 실행 시간, stdout/stderr 크기에 상한을 둡니다. 명령 입력과 결과는 다른 Tool Call과 같이 실행 단계에 저장되며, 실시간 이벤트에는 명령 이름·종료 코드·실행 시간만 게시합니다. `shell` authority가 없는 컨테이너 프로필에서는 이 Tool 자체가 모델에 노출되지 않습니다.
 
 현재 환경은 `GET /api/environment`에서 확인할 수 있습니다. 기본 로컬 경로는 `.runtime/` 아래에 생성되며 저장소에는 커밋되지 않습니다.
 
@@ -111,7 +113,7 @@ Agent Harness는 Provider가 반환한 Tool Call만 실행하며 다음 세 가�
 
 Skill은 `<skills-root>/<name>/SKILL.md`에 저장합니다. 기본 루트는 `<config>/skills`이며 `QUANYEJUN_SKILLS_DIR`로 바꿀 수 있습니다. 런타임은 처음부터 모든 지시문을 프롬프트에 넣지 않습니다. 모델은 `skill_list`로 이름·설명·콘텐츠 해시만 확인한 뒤, 실제로 필요한 하나를 `skill_load`로 읽습니다. 예제는 `skills/workspace-summary/SKILL.md`에 있습니다.
 
-Skill 지시문은 하네스 정책보다 낮은 신뢰도로 취급합니다. 따라서 Skill이 Tool, filesystem capability, authority를 새로 부여하거나 실행 예산을 변경할 수 없습니다. Tool 입력·출력은 실행 단계 DB에는 남지만 실시간 `run.step` 이벤트에는 실리지 않아 파일 내용과 Skill 본문이 WebSocket 구독자에게 재전송되지 않습니다.
+Skill 지시문은 하네스 정책보다 낮은 신뢰도로 취급합니다. 따라서 Skill이 Tool, filesystem capability, authority를 새로 부여하거나 실행 예산을 변경할 수 없습니다. 다만 이미 `shell` authority가 있는 컴퓨팅 환경에서는 Skill이 CLI 탐색·설치·사용법을 안내하고, 적합한 CLI가 없는 서비스에는 MCP 사용을 안내할 수 있습니다. Tool 입력·출력은 실행 단계 DB에는 남지만 실시간 `run.step` 이벤트에는 실리지 않아 파일 내용과 Skill 본문이 WebSocket 구독자에게 재전송되지 않습니다.
 
 현재 단계에서는 Skill 선택에 RAG를 사용하지 않습니다. Skill 수가 적을 때는 메타데이터 목록과 명시적 로드가 더 예측 가능합니다. 향후 Skill·문서가 많아져 전체 메타데이터도 문맥을 잠식하거나 의미 검색이 필요해지면, 같은 `skill_list` 앞단에 하이브리드 검색을 추가할 수 있습니다.
 
@@ -135,11 +137,11 @@ MCP 인증 헤더 값은 JSON에 기록하지 않고 `headerEnv`가 가리키는
 
 `grantedBy`는 감사용 출처 표시이며 인증 수단 자체는 아닙니다. 현재 MVP의 관리 경계는 해당 두 파일과 프로세스 환경 변수를 수정할 수 있는 OS 권한입니다. 향후 관리 UI를 추가하려면 관리자/부모 인증과 감사 이벤트를 먼저 붙여야 합니다.
 
-안전 기본값은 HTTPS, 명시적 Tool 이름, 실패 시 권한 제거입니다. 로컬 개발 서버처럼 HTTP가 꼭 필요한 경우에만 관리자가 `allowInsecureHttp: true`를 선언할 수 있습니다. 임의 `stdio` MCP 명령 실행은 일반 설정에 포함하지 않았습니다.
+안전 기본값은 HTTPS, 명시적 Tool 이름, 실패 시 권한 제거입니다. 로컬 개발 서버처럼 HTTP가 꼭 필요한 경우에만 관리자가 `allowInsecureHttp: true`를 선언할 수 있습니다. 원격 MCP Registry는 외부 서비스용 선택적 capability provider이며, 현재 MCP 클라이언트 transport는 Streamable HTTP입니다. `shell` authority가 있는 게스트는 일반 프로세스를 실행할 수 있지만, 실행한 stdio MCP 프로세스를 Tool Registry에 동적으로 연결하는 어댑터는 아직 포함하지 않습니다.
 
 ### LXC 게스트에 설치
 
-LXC는 오케스트레이션 대상이 아니라 첫 서버 실행 어댑터로 취급합니다. Linux용 바이너리를 빌드한 뒤 LXC 게스트 안에서 설치 스크립트를 실행합니다.
+LXC는 오케스트레이션 대상이 아니라 첫 서버 실행 어댑터로 취급합니다. Linux용 바이너리를 빌드한 뒤 전용 LXC 게스트 안에서 설치 스크립트를 실행합니다. 제공되는 systemd 프로필은 LXC 자체를 보안 경계로 보고 게스트 내부 패키지 설치와 시스템 도구 사용을 허용하기 위해 런타임을 root로 실행합니다. 공유 호스트나 신뢰하지 않는 게스트에서 이 프로필을 직접 사용하면 안 됩니다.
 
 ```bash
 cd runtime
