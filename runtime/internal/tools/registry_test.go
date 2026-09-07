@@ -17,7 +17,7 @@ import (
 func TestDefinitionsExposeOnlyAuthorizedEnvironmentTools(t *testing.T) {
 	restricted := testEnvironment(t, []environment.Capability{environment.CanWriteFiles})
 	definitions := NewRegistry(store.NewMemoryStore(), restricted).Definitions()
-	if hasDefinition(definitions, "workspace_read_file") || !hasDefinition(definitions, "memory_remember") {
+	if hasDefinition(definitions, "workspace_read_file") || hasDefinition(definitions, "environment_exec") || !hasDefinition(definitions, "environment_inspect") || !hasDefinition(definitions, "memory_remember") {
 		t.Fatalf("unexpected restricted definitions: %#v", definitions)
 	}
 
@@ -26,6 +26,53 @@ func TestDefinitionsExposeOnlyAuthorizedEnvironmentTools(t *testing.T) {
 	if !hasDefinition(definitions, "workspace_read_file") || !hasDefinition(definitions, "memory_remember") {
 		t.Fatalf("unexpected reader definitions: %#v", definitions)
 	}
+
+	shell := testEnvironment(t, []environment.Capability{environment.CanShell})
+	definitions = NewRegistry(store.NewMemoryStore(), shell).Definitions()
+	if !hasDefinition(definitions, "environment_exec") || !hasDefinition(definitions, "environment_inspect") {
+		t.Fatalf("shell tools were not exposed: %#v", definitions)
+	}
+	for _, definition := range definitions {
+		if definition.Name == "environment_exec" && (definition.Strict == nil || *definition.Strict) {
+			t.Fatal("environment_exec has optional inputs and must disable provider strict schema mode")
+		}
+	}
+}
+
+func TestEnvironmentExecRunsAuthorizedCommandAndEmitsAuditMetadata(t *testing.T) {
+	registry := NewRegistry(store.NewMemoryStore(), testEnvironment(t, []environment.Capability{environment.CanShell}))
+	arguments, err := json.Marshal(map[string]any{
+		"command": os.Args[0],
+		"args":    []string{"-test.run=^TestEnvironmentExecHelperProcess$", "--", "success"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := registry.Execute(context.Background(), "actor", llm.ToolCall{Name: "environment_exec", Arguments: arguments})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !contains(result.Output, `"exitCode":0`) || !contains(result.Output, "helper output") {
+		t.Fatalf("unexpected command result: %s", result.Output)
+	}
+	if result.EventType != "environment.command.completed" || result.Payload["command"] != os.Args[0] {
+		t.Fatalf("unexpected command event: %#v", result)
+	}
+}
+
+func TestEnvironmentExecRejectsWorkspaceEscape(t *testing.T) {
+	registry := NewRegistry(store.NewMemoryStore(), testEnvironment(t, []environment.Capability{environment.CanShell}))
+	arguments, _ := json.Marshal(map[string]any{"command": os.Args[0], "workdir": "../outside"})
+	if _, err := registry.Execute(context.Background(), "actor", llm.ToolCall{Name: "environment_exec", Arguments: arguments}); err == nil {
+		t.Fatal("expected workspace escape rejection")
+	}
+}
+
+func TestEnvironmentExecHelperProcess(t *testing.T) {
+	if len(os.Args) < 2 || os.Args[len(os.Args)-1] != "success" {
+		return
+	}
+	_, _ = os.Stdout.WriteString("helper output")
 }
 
 func TestSkillToolsUseProgressiveDisclosure(t *testing.T) {

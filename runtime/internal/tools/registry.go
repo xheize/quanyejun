@@ -19,6 +19,15 @@ import (
 
 const maxReadBytes = 64 * 1024
 
+const (
+	maxCommandLength      = 4096
+	maxCommandArgs        = 256
+	maxCommandInput       = 64 * 1024
+	maxArgumentBytes      = 32 * 1024
+	defaultCommandTimeout = 120 * time.Second
+	maximumCommandTimeout = 300 * time.Second
+)
+
 type Result struct {
 	Output    string
 	EventType string
@@ -45,8 +54,17 @@ func NewRegistry(dataStore store.Store, executionEnvironment environment.Environ
 }
 
 func (r *Registry) Definitions() []llm.ToolDefinition {
-	definitions := make([]llm.ToolDefinition, 0, 4)
+	definitions := make([]llm.ToolDefinition, 0, 6)
 	info, err := r.environment.Inspect(context.Background())
+	if err == nil {
+		definitions = append(definitions, llm.ToolDefinition{
+			Name:        "environment_inspect",
+			Description: "Inspect the assigned computer environment, including OS, workspace paths, installed command-line tools, capabilities, and current authority. Use this before choosing or installing a CLI.",
+			Parameters: map[string]any{
+				"type": "object", "additionalProperties": false, "properties": map[string]any{},
+			},
+		})
+	}
 	if err == nil && containsCapability(info.Capabilities, environment.CanReadFiles) && containsCapability(info.Authority.Granted, environment.CanReadFiles) {
 		definitions = append(definitions, llm.ToolDefinition{
 			Name:        "workspace_read_file",
@@ -55,6 +73,25 @@ func (r *Registry) Definitions() []llm.ToolDefinition {
 				"type": "object", "additionalProperties": false,
 				"properties": map[string]any{"path": map[string]any{"type": "string", "description": "Workspace-relative file path"}},
 				"required":   []string{"path"},
+			},
+		})
+	}
+	if err == nil && containsCapability(info.Capabilities, environment.CanShell) && containsCapability(info.Authority.Granted, environment.CanShell) {
+		definitions = append(definitions, llm.ToolDefinition{
+			Name:        "environment_exec",
+			Description: "Execute one program in the assigned computer environment. The command is an executable and args are passed without shell interpolation. To use pipes or shell syntax, explicitly run sh, bash, pwsh, or another installed shell. Commands may install packages when the guest OS authority permits it. Prefer structured output and dry-run flags when available. Never put secrets in command arguments.",
+			Strict:      boolPointer(false),
+			Parameters: map[string]any{
+				"type": "object", "additionalProperties": false,
+				"properties": map[string]any{
+					"command":        map[string]any{"type": "string", "description": "Executable name or path, such as kubectl, apt-get, gws, sh, or pwsh"},
+					"args":           map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Arguments passed directly to the executable"},
+					"stdin":          map[string]any{"type": "string", "description": "Optional standard input, limited to 64 KiB"},
+					"workdir":        map[string]any{"type": "string", "description": "Optional workspace-relative working directory"},
+					"isolated":       map[string]any{"type": "boolean", "description": "Run in a temporary empty directory instead of the persistent workspace"},
+					"timeoutSeconds": map[string]any{"type": "integer", "minimum": 1, "maximum": int(maximumCommandTimeout / time.Second), "description": "Command timeout; defaults to 120 seconds"},
+				},
+				"required": []string{"command"},
 			},
 		})
 	}
@@ -95,6 +132,58 @@ func (r *Registry) Definitions() []llm.ToolDefinition {
 
 func (r *Registry) Execute(ctx context.Context, actorID string, call llm.ToolCall) (Result, error) {
 	switch call.Name {
+	case "environment_inspect":
+		var input struct{}
+		if err := decodeStrict(call.Arguments, &input); err != nil {
+			return Result{}, err
+		}
+		info, err := r.environment.Inspect(ctx)
+		if err != nil {
+			return Result{}, fmt.Errorf("inspect environment: %w", err)
+		}
+		encoded, _ := json.Marshal(map[string]any{"environment": info})
+		return Result{Output: string(encoded)}, nil
+	case "environment_exec":
+		var input struct {
+			Command        string   `json:"command"`
+			Args           []string `json:"args"`
+			Stdin          string   `json:"stdin"`
+			WorkDir        string   `json:"workdir"`
+			Isolated       bool     `json:"isolated"`
+			TimeoutSeconds int      `json:"timeoutSeconds"`
+		}
+		if err := decodeStrict(call.Arguments, &input); err != nil {
+			return Result{}, err
+		}
+		input.Command = strings.TrimSpace(input.Command)
+		if err := validateCommandInput(input.Command, input.Args, input.Stdin, input.WorkDir, input.Isolated, input.TimeoutSeconds); err != nil {
+			return Result{}, err
+		}
+		timeout := defaultCommandTimeout
+		if input.TimeoutSeconds > 0 {
+			timeout = time.Duration(input.TimeoutSeconds) * time.Second
+		}
+		commandContext, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+		startedAt := time.Now()
+		runResult, err := r.environment.Run(commandContext, environment.RunSpec{
+			Command: input.Command, Args: input.Args, Stdin: input.Stdin, WorkDir: input.WorkDir,
+			Isolated: input.Isolated, Requires: []environment.Capability{environment.CanShell},
+		})
+		duration := time.Since(startedAt)
+		if err != nil {
+			return Result{}, fmt.Errorf("execute environment command: %w", err)
+		}
+		encoded, _ := json.Marshal(map[string]any{
+			"command": input.Command, "exitCode": runResult.ExitCode,
+			"stdout": runResult.Stdout, "stderr": runResult.Stderr,
+			"stdoutTruncated": runResult.StdoutTruncated, "stderrTruncated": runResult.StderrTruncated,
+			"durationMilliseconds": duration.Milliseconds(),
+		})
+		return Result{
+			Output: string(encoded), EventType: "environment.command.completed",
+			Payload: map[string]any{"command": input.Command, "exitCode": runResult.ExitCode, "durationMilliseconds": duration.Milliseconds()},
+		}, nil
 	case "workspace_read_file":
 		var input struct {
 			Path string `json:"path"`
@@ -199,6 +288,41 @@ func (r *Registry) Execute(ctx context.Context, actorID string, call llm.ToolCal
 	}
 }
 
+func validateCommandInput(command string, args []string, stdin, workDir string, isolated bool, timeoutSeconds int) error {
+	if command == "" {
+		return fmt.Errorf("command is required")
+	}
+	if len(command) > maxCommandLength || strings.ContainsRune(command, '\x00') {
+		return fmt.Errorf("command must be at most %d characters and contain no NUL byte", maxCommandLength)
+	}
+	if len(args) > maxCommandArgs {
+		return fmt.Errorf("command accepts at most %d arguments", maxCommandArgs)
+	}
+	totalArgumentBytes := 0
+	for _, argument := range args {
+		if strings.ContainsRune(argument, '\x00') {
+			return fmt.Errorf("command arguments cannot contain a NUL byte")
+		}
+		totalArgumentBytes += len(argument)
+	}
+	if totalArgumentBytes > maxArgumentBytes {
+		return fmt.Errorf("command arguments exceed %d bytes", maxArgumentBytes)
+	}
+	if len(stdin) > maxCommandInput {
+		return fmt.Errorf("command stdin exceeds %d bytes", maxCommandInput)
+	}
+	if strings.ContainsRune(workDir, '\x00') {
+		return fmt.Errorf("command working directory cannot contain a NUL byte")
+	}
+	if isolated && strings.TrimSpace(workDir) != "" {
+		return fmt.Errorf("isolated commands cannot specify workdir")
+	}
+	if timeoutSeconds < 0 || timeoutSeconds > int(maximumCommandTimeout/time.Second) {
+		return fmt.Errorf("timeoutSeconds must be between 1 and %d when provided", int(maximumCommandTimeout/time.Second))
+	}
+	return nil
+}
+
 func decodeStrict(raw json.RawMessage, target any) error {
 	decoder := json.NewDecoder(strings.NewReader(string(raw)))
 	decoder.DisallowUnknownFields()
@@ -215,4 +339,8 @@ func containsCapability(values []environment.Capability, target environment.Capa
 		}
 	}
 	return false
+}
+
+func boolPointer(value bool) *bool {
+	return &value
 }
