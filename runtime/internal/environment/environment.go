@@ -47,18 +47,21 @@ type Info struct {
 }
 
 type RunSpec struct {
-	Command  string
-	Args     []string
-	Stdin    string
-	WorkDir  string
-	Isolated bool
-	Requires []Capability
+	Command        string
+	Args           []string
+	Stdin          string
+	WorkDir        string
+	Isolated       bool
+	Requires       []Capability
+	MaxOutputBytes int
 }
 
 type RunResult struct {
-	Stdout   string
-	Stderr   string
-	ExitCode int
+	Stdout          string
+	Stderr          string
+	ExitCode        int
+	StdoutTruncated bool
+	StderrTruncated bool
 }
 
 // Environment is the replaceable execution boundary used by the core. An

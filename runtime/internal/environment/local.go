@@ -3,6 +3,7 @@ package environment
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -10,6 +11,13 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"sync"
+	"time"
+)
+
+const (
+	defaultMaxCommandOutputBytes = 128 * 1024
+	maximumMaxCommandOutputBytes = 1024 * 1024
 )
 
 type Config struct {
@@ -20,8 +28,11 @@ type Config struct {
 }
 
 type Local struct {
-	config  Config
-	granted map[Capability]struct{}
+	config          Config
+	granted         map[Capability]struct{}
+	inspectMu       sync.Mutex
+	inspectCachedAt time.Time
+	inspectCache    Info
 }
 
 func ConfigFromEnvironment(getenv func(string) string) Config {
@@ -72,6 +83,11 @@ func (l *Local) Prepare(context.Context) error {
 }
 
 func (l *Local) Inspect(context.Context) (Info, error) {
+	l.inspectMu.Lock()
+	defer l.inspectMu.Unlock()
+	if !l.inspectCachedAt.IsZero() && time.Since(l.inspectCachedAt) < 5*time.Second {
+		return l.inspectCache, nil
+	}
 	tools := make([]Tool, 0, len(discoverableTools))
 	available := make(map[string]bool, len(discoverableTools))
 	for _, name := range discoverableTools {
@@ -100,7 +116,7 @@ func (l *Local) Inspect(context.Context) (Info, error) {
 	if available["docker"] {
 		capabilities = append(capabilities, CanUseDocker)
 	}
-	return Info{
+	info := Info{
 		Kind:         l.config.Kind,
 		Profile:      l.config.Profile,
 		OS:           runtime.GOOS,
@@ -109,7 +125,10 @@ func (l *Local) Inspect(context.Context) (Info, error) {
 		Capabilities: capabilities,
 		Authority:    l.config.Authority,
 		Tools:        tools,
-	}, nil
+	}
+	l.inspectCache = info
+	l.inspectCachedAt = time.Now()
+	return info, nil
 }
 
 func (l *Local) LookPath(_ context.Context, name string) (string, error) {
@@ -164,44 +183,159 @@ func (l *Local) Run(ctx context.Context, spec RunSpec) (RunResult, error) {
 	workDir := strings.TrimSpace(spec.WorkDir)
 	cleanup := func() {}
 	if spec.Isolated {
+		if workDir != "" {
+			return RunResult{ExitCode: -1}, fmt.Errorf("isolated runs cannot specify a workspace directory")
+		}
 		isolated, err := os.MkdirTemp(l.config.Paths.Cache, "run-*")
 		if err != nil {
 			return RunResult{ExitCode: -1}, fmt.Errorf("create isolated environment workspace: %w", err)
 		}
 		workDir = isolated
 		cleanup = func() { _ = os.RemoveAll(isolated) }
-	} else if workDir == "" {
-		workDir = l.config.Paths.Workspace
+	} else {
+		if workDir == "" {
+			workDir = l.config.Paths.Workspace
+		} else {
+			resolved, resolveErr := secureWorkspacePath(l.config.Paths.Workspace, workDir)
+			if resolveErr != nil {
+				return RunResult{ExitCode: -1}, fmt.Errorf("resolve command working directory: %w", resolveErr)
+			}
+			workDir = resolved
+		}
 	}
 	defer cleanup()
+	if stat, statErr := os.Stat(workDir); statErr != nil || !stat.IsDir() {
+		if statErr == nil {
+			statErr = fmt.Errorf("not a directory")
+		}
+		return RunResult{ExitCode: -1}, fmt.Errorf("command working directory %s: %w", workDir, statErr)
+	}
+
+	maxOutputBytes := spec.MaxOutputBytes
+	if maxOutputBytes <= 0 {
+		maxOutputBytes = defaultMaxCommandOutputBytes
+	}
+	if maxOutputBytes > maximumMaxCommandOutputBytes {
+		maxOutputBytes = maximumMaxCommandOutputBytes
+	}
 
 	command := exec.CommandContext(ctx, spec.Command, spec.Args...)
 	command.Dir = workDir
 	command.Stdin = strings.NewReader(spec.Stdin)
-	command.Env = append(os.Environ(),
-		"QUANYEJUN_HOME="+l.config.Paths.Home,
-		"QUANYEJUN_WORKSPACE="+l.config.Paths.Workspace,
-		"QUANYEJUN_CONFIG_DIR="+l.config.Paths.Config,
-		"QUANYEJUN_CACHE_DIR="+l.config.Paths.Cache,
-	)
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
+	overrides := map[string]string{
+		"HOME":                 l.config.Paths.Home,
+		"XDG_CONFIG_HOME":      l.config.Paths.Config,
+		"XDG_CACHE_HOME":       l.config.Paths.Cache,
+		"QUANYEJUN_HOME":       l.config.Paths.Home,
+		"QUANYEJUN_WORKSPACE":  l.config.Paths.Workspace,
+		"QUANYEJUN_CONFIG_DIR": l.config.Paths.Config,
+		"QUANYEJUN_CACHE_DIR":  l.config.Paths.Cache,
+	}
+	if runtime.GOOS == "windows" {
+		overrides["USERPROFILE"] = l.config.Paths.Home
+	}
+	command.Env = environmentWithOverrides(os.Environ(), overrides)
+	stdout := newLimitedBuffer(maxOutputBytes)
+	stderr := newLimitedBuffer(maxOutputBytes)
 	command.Stdout = &stdout
 	command.Stderr = &stderr
 	err = command.Run()
-	result := RunResult{Stdout: stdout.String(), Stderr: stderr.String(), ExitCode: 0}
+	l.invalidateInspection()
+	result := RunResult{
+		Stdout: stdout.String(), Stderr: stderr.String(), ExitCode: 0,
+		StdoutTruncated: stdout.Truncated(), StderrTruncated: stderr.Truncated(),
+	}
 	if err != nil {
 		result.ExitCode = -1
 		if exitError, ok := err.(*exec.ExitError); ok {
 			result.ExitCode = exitError.ExitCode()
 		}
+		if ctx.Err() != nil {
+			return result, ctx.Err()
+		}
+		var exitError *exec.ExitError
+		if errors.As(err, &exitError) {
+			return result, nil
+		}
 	}
 	return result, err
 }
 
+func (l *Local) invalidateInspection() {
+	l.inspectMu.Lock()
+	l.inspectCachedAt = time.Time{}
+	l.inspectCache = Info{}
+	l.inspectMu.Unlock()
+}
+
 var discoverableTools = []string{
-	"sh", "bash", "git", "ssh", "curl", "wget", "jq", "tar", "gzip", "find", "grep", "sed", "awk",
-	"go", "node", "pnpm", "python", "docker", "gh", "claude", "codex",
+	"sh", "bash", "pwsh", "powershell", "git", "ssh", "curl", "wget", "jq", "tar", "gzip", "find", "grep", "sed", "awk",
+	"apt", "apt-get", "apk", "dnf", "yum", "brew", "winget", "go", "node", "npm", "pnpm", "python", "python3", "pip", "pip3", "uv", "docker", "kubectl", "gh", "gws", "claude", "codex",
+}
+
+type limitedBuffer struct {
+	buffer    bytes.Buffer
+	remaining int
+	truncated bool
+}
+
+func newLimitedBuffer(limit int) limitedBuffer {
+	return limitedBuffer{remaining: limit}
+}
+
+func (b *limitedBuffer) Write(content []byte) (int, error) {
+	originalLength := len(content)
+	if b.remaining <= 0 {
+		b.truncated = b.truncated || originalLength > 0
+		return originalLength, nil
+	}
+	toWrite := content
+	if len(toWrite) > b.remaining {
+		toWrite = toWrite[:b.remaining]
+		b.truncated = true
+	}
+	_, _ = b.buffer.Write(toWrite)
+	b.remaining -= len(toWrite)
+	return originalLength, nil
+}
+
+func (b *limitedBuffer) String() string {
+	return b.buffer.String()
+}
+
+func (b *limitedBuffer) Truncated() bool {
+	return b.truncated
+}
+
+func environmentWithOverrides(current []string, overrides map[string]string) []string {
+	result := make([]string, 0, len(current)+len(overrides))
+	for _, entry := range current {
+		separator := strings.IndexByte(entry, '=')
+		if separator <= 0 {
+			continue
+		}
+		name := entry[:separator]
+		if _, replaced := overrides[name]; replaced {
+			continue
+		}
+		if runtime.GOOS == "windows" {
+			replaced := false
+			for overrideName := range overrides {
+				if strings.EqualFold(name, overrideName) {
+					replaced = true
+					break
+				}
+			}
+			if replaced {
+				continue
+			}
+		}
+		result = append(result, entry)
+	}
+	for name, value := range overrides {
+		result = append(result, name+"="+value)
+	}
+	return result
 }
 
 func pathOrDefault(value, fallback string) string {

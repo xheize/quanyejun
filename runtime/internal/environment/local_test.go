@@ -2,6 +2,7 @@ package environment
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -73,4 +74,48 @@ func TestLocalReadFileStaysInsideWorkspace(t *testing.T) {
 	if _, err := local.ReadFile(context.Background(), "../outside.txt"); err == nil {
 		t.Fatal("expected workspace escape rejection")
 	}
+}
+
+func TestLocalRunCapsOutputAndReturnsProcessExitCode(t *testing.T) {
+	root := t.TempDir()
+	local := NewLocal(Config{
+		Kind: "test", Profile: "runner",
+		Paths:     Paths{Home: filepath.Join(root, "home"), Workspace: filepath.Join(root, "workspace"), Config: filepath.Join(root, "config"), Cache: filepath.Join(root, "cache")},
+		Authority: Authority{Mode: "internal", Granted: []Capability{CanShell}},
+	})
+	if err := local.Prepare(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	result, err := local.Run(context.Background(), RunSpec{
+		Command: os.Args[0], Args: []string{"-test.run=^TestLocalRunHelperProcess$", "--", "exit-seven"}, MaxOutputBytes: 32,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ExitCode != 7 || len(result.Stdout) != 32 || !result.StdoutTruncated {
+		t.Fatalf("unexpected limited result: %#v", result)
+	}
+}
+
+func TestLocalRunRejectsWorkspaceEscape(t *testing.T) {
+	root := t.TempDir()
+	local := NewLocal(Config{
+		Kind: "test", Profile: "runner",
+		Paths:     Paths{Home: filepath.Join(root, "home"), Workspace: filepath.Join(root, "workspace"), Config: filepath.Join(root, "config"), Cache: filepath.Join(root, "cache")},
+		Authority: Authority{Mode: "internal", Granted: []Capability{CanShell}},
+	})
+	if err := local.Prepare(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := local.Run(context.Background(), RunSpec{Command: os.Args[0], WorkDir: "../outside"}); err == nil {
+		t.Fatal("expected command workspace escape rejection")
+	}
+}
+
+func TestLocalRunHelperProcess(t *testing.T) {
+	if len(os.Args) < 2 || os.Args[len(os.Args)-1] != "exit-seven" {
+		return
+	}
+	_, _ = fmt.Fprint(os.Stdout, "0123456789abcdefghijklmnopqrstuvwxyz")
+	os.Exit(7)
 }
