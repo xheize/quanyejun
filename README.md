@@ -87,6 +87,16 @@ docker compose up --build
 
 PostgreSQL, Identity workspace, cache, 관리자 설정은 각각 Docker volume에 유지됩니다. `quanyejun-config` volume은 최초 생성 시 비활성화된 MCP 예제로 초기화되며, 실제 연결을 사용할 때 `/etc/quanyejun/mcp-servers.json`과 `/etc/quanyejun/mcp-authority.json`을 관리자가 수정하면 됩니다. `.dockerignore`는 로컬 의존성, 빌드 결과, 런타임 데이터, 비밀 설정을 빌드 컨텍스트에서 제외합니다.
 
+## SSO 로그인과 익명 방문자
+
+로그인하지 않아도 서버가 발급한 쿠키로 같은 브라우저의 대화를 이어갑니다. 익명 기록은 **각 생성 시점부터 최대 72시간**만 조회할 수 있으며, 접속을 계속해도 만료가 연장되지 않습니다. 파생 답변·기억·실행 결과는 원본의 가장 이른 만료를 이어받고, 만료 행은 서버 시작 및 30초 간격 정리 작업으로 삭제합니다.
+
+기존 SSO를 연결하려면 `.env`에 discovery가 광고하는 정확한 `SSO_ISSUER_URL`, 등록한 `SSO_CLIENT_ID`와 필요한 경우 `SSO_CLIENT_SECRET`을 설정합니다. 2026-09-13 확인 시 `sso.example.com`는 `sso-dev.example.com`를 issuer로 광고했으므로 먼저 실제 사용할 주소를 확정해야 합니다. SSO 관리자에 `SSO_REDIRECT_URL`의 정확한 URL(기본 `http://localhost:8080/auth/callback`), `authorization_code`, `code`, `openid`, PKCE S256을 등록해야 합니다. 운영에서는 웹·API의 HTTPS 주소에 맞게 `WEB_PUBLIC_URL`, `SSO_REDIRECT_URL`, `ALLOWED_ORIGINS`를 지정합니다.
+
+로그인 사용자는 SSO subject로 지속 식별합니다. 익명 기록은 로그인 기록으로 자동 이전하지 않습니다. 로그인만으로 소유자의 CLI·파일·MCP 권한을 부여하지 않습니다. 기존 `person_example` 기록의 SSO 소유자 매핑도 별도 작업입니다. Go 직접 실행은 `.env`를 자동으로 읽지 않으므로 셸에 값을 설정해야 합니다.
+
+쿠키 보호 키는 기본적으로 영속 HOME의 `session.key`에 생성됩니다. 여러 backend replica는 동일한 `SESSION_ENCRYPTION_KEY`(32바이트 난수의 base64)를 사용해야 합니다. 상세 계약은 [상대 식별과 익명 보존 설계](docs/architecture/identity-and-retention.md)를 참고하세요.
+
 ## Identity 표기명 변경
 
 프로젝트 이름과 내부 ID `identity_quanyejun`은 고정하고, 화면과 대화에서 자신을 부르는 이름만 바꿀 수 있습니다. 런타임을 시작하기 전에 다음 값을 설정합니다.
