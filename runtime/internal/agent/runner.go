@@ -42,6 +42,24 @@ func (r *Runner) Start(actorID, messageID, goal string) (domain.AgentRun, error)
 		InputMessageID: messageID, Kind: "parent", Provider: info.ID, Model: info.Model, Status: "queued", Goal: goal,
 		CreatedAt: now, UpdatedAt: now,
 	}
+	messages, err := r.store.ListMessages(context.Background(), actorID, 50)
+	if err != nil {
+		return domain.AgentRun{}, err
+	}
+	memories, err := r.store.ListMemories(context.Background(), actorID, 8)
+	if err != nil {
+		return domain.AgentRun{}, err
+	}
+	run.ExpiresAt = domain.Expiry(context.Background(), actorID, now, nil)
+	for _, m := range throughMessage(messages, messageID) {
+		run.ExpiresAt = domain.Earliest(run.ExpiresAt, m.ExpiresAt)
+	}
+	for _, m := range memories {
+		run.ExpiresAt = domain.Earliest(run.ExpiresAt, m.ExpiresAt)
+	}
+	if domain.Expired(run.ExpiresAt) {
+		return domain.AgentRun{}, fmt.Errorf("context expired; retry with fresh context")
+	}
 	if err := r.store.CreateAgentRun(context.Background(), run); err != nil {
 		return domain.AgentRun{}, err
 	}
@@ -78,9 +96,19 @@ func (r *Runner) launch(run domain.AgentRun) {
 		defer r.active.Delete(run.ID)
 		ctx, cancel := context.WithTimeout(context.Background(), r.config.RunTimeout)
 		defer cancel()
+		ctx = domain.WithExpiry(ctx, run.ExpiresAt)
+		if run.ExpiresAt != nil {
+			var expiryCancel context.CancelFunc
+			ctx, expiryCancel = context.WithDeadline(ctx, *run.ExpiresAt)
+			defer expiryCancel()
+		}
 		if err := r.execute(ctx, run); err != nil {
-			slog.Error("agent run failed", "runId", run.ID, "error", err)
-			r.fail(run, err)
+			slog.Error("agent run failed", "runId", run.ID, "status", "failed")
+			// Execution can shorten the context lifetime. Never publish a failure
+			// using the older queued deadline, or resurrect an expired run.
+			if current, readErr := r.store.GetAgentRun(context.Background(), run.ID); readErr == nil {
+				r.fail(current, err)
+			}
 		}
 	}()
 }
@@ -104,6 +132,23 @@ func (r *Runner) execute(ctx context.Context, run domain.AgentRun) error {
 	if err != nil {
 		return err
 	}
+	// Context may have changed between queuing and execution. Shorten the entire
+	// derived result's lifetime to include every record actually sent to the model.
+	for _, message := range messages {
+		run.ExpiresAt = domain.Earliest(run.ExpiresAt, message.ExpiresAt)
+	}
+	for _, memory := range memories {
+		run.ExpiresAt = domain.Earliest(run.ExpiresAt, memory.ExpiresAt)
+	}
+	ctx = domain.WithExpiry(ctx, run.ExpiresAt)
+	if run.ExpiresAt != nil {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithDeadline(ctx, *run.ExpiresAt)
+		defer cancel()
+		if err := r.store.UpdateAgentRun(ctx, run); err != nil {
+			return err
+		}
+	}
 	exchanges := make([]llm.ToolExchange, 0)
 	steps, err := r.store.ListRunSteps(ctx, run.ID)
 	if err != nil {
@@ -114,12 +159,15 @@ func (r *Runner) execute(ctx context.Context, run domain.AgentRun) error {
 
 	for turn := 0; turn < r.config.MaxTurns; turn++ {
 		sequence++
-		requestInput := mustJSON(map[string]any{"turn": turn + 1, "messageCount": len(messages), "memoryCount": len(memories), "toolCount": len(r.tools.Definitions()), "toolCallsUsed": toolCallCount, "toolCallBudget": r.config.MaxToolCalls})
+		requestInput := mustJSON(map[string]any{"turn": turn + 1, "messageCount": len(messages), "memoryCount": len(memories), "toolCount": len(r.tools.DefinitionsFor(run.ActorID)), "toolCallsUsed": toolCallCount, "toolCallBudget": r.config.MaxToolCalls})
 		if err := r.appendStep(ctx, run, domain.RunStep{ID: uuid.NewString(), RunID: run.ID, Sequence: sequence, Kind: "model_request", Status: "completed", Input: requestInput, CreatedAt: time.Now().UTC(), CompletedAt: time.Now().UTC()}); err != nil {
 			return err
 		}
 
-		result, err := r.provider.Turn(ctx, llm.Request{ActorID: run.ActorID, IdentityName: r.displayName, Messages: messages, Memories: memories, Tools: r.tools.Definitions(), Exchanges: exchanges})
+		result, err := r.provider.Turn(ctx, llm.Request{ActorID: run.ActorID, IdentityName: r.displayName, Messages: messages, Memories: memories, Tools: r.tools.DefinitionsFor(run.ActorID), Exchanges: exchanges})
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		if err != nil {
 			return fmt.Errorf("provider turn: %w", err)
 		}
@@ -133,7 +181,7 @@ func (r *Runner) execute(ctx context.Context, run domain.AgentRun) error {
 			if result.Text == "" {
 				return fmt.Errorf("provider completed without text")
 			}
-			message := domain.Message{ID: uuid.NewString(), ActorID: run.ActorID, ConversationID: run.ConversationID, Role: "assistant", Content: result.Text, CreatedAt: time.Now().UTC()}
+			message := domain.Message{ID: uuid.NewString(), ActorID: run.ActorID, ConversationID: run.ConversationID, Role: "assistant", Content: result.Text, CreatedAt: time.Now().UTC(), ExpiresAt: run.ExpiresAt}
 			if err := r.store.AddMessage(ctx, message); err != nil {
 				return err
 			}
@@ -198,6 +246,7 @@ func (r *Runner) fail(run domain.AgentRun, cause error) {
 }
 
 func (r *Runner) appendStep(ctx context.Context, run domain.AgentRun, step domain.RunStep) error {
+	step.ExpiresAt = domain.Earliest(step.ExpiresAt, run.ExpiresAt)
 	if err := r.store.AppendRunStep(ctx, step); err != nil {
 		return err
 	}
@@ -209,6 +258,10 @@ func (r *Runner) appendStep(ctx context.Context, run domain.AgentRun, step domai
 
 func (r *Runner) emit(ctx context.Context, run domain.AgentRun, eventType string, payload map[string]any) error {
 	event := domain.Event{ID: uuid.NewString(), Type: eventType, Source: "agent-runtime", ActorID: run.ActorID, ConversationID: run.ConversationID, Timestamp: time.Now().UTC(), Payload: payload}
+	event.ExpiresAt = domain.Earliest(run.ExpiresAt, domain.EventExpiry(ctx, event))
+	if domain.Expired(event.ExpiresAt) {
+		return nil
+	}
 	if err := r.store.AppendEvent(ctx, event); err != nil {
 		return err
 	}

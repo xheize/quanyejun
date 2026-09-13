@@ -23,7 +23,7 @@ func (r *Runner) StartDemo(actorID string, duration time.Duration) (domain.Task,
 		duration = 4 * time.Second
 	}
 	now := time.Now().UTC()
-	task := domain.Task{ID: uuid.NewString(), ActorID: actorID, Title: "연결 독립성 확인", Type: "demo.continuity", Status: "queued", Progress: 0, CreatedAt: now, UpdatedAt: now}
+	task := domain.Task{ID: uuid.NewString(), ActorID: actorID, Title: "연결 독립성 확인", Type: "demo.continuity", Status: "queued", Progress: 0, CreatedAt: now, UpdatedAt: now, ExpiresAt: domain.Expiry(context.Background(), actorID, now, nil)}
 	if err := r.store.CreateTask(context.Background(), task); err != nil {
 		return domain.Task{}, err
 	}
@@ -68,6 +68,10 @@ func (r *Runner) fail(task domain.Task, cause error) {
 }
 func (r *Runner) emit(eventType, actorID string, payload map[string]any) error {
 	event := domain.Event{ID: uuid.NewString(), Type: eventType, Source: "runtime", ActorID: actorID, ConversationID: domain.ConversationID, Timestamp: time.Now().UTC(), Payload: payload}
+	event.ExpiresAt = domain.EventExpiry(context.Background(), event)
+	if domain.Expired(event.ExpiresAt) {
+		return nil
+	}
 	if err := r.store.AppendEvent(context.Background(), event); err != nil {
 		return fmt.Errorf("persist %s: %w", eventType, err)
 	}

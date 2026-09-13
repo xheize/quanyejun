@@ -29,6 +29,28 @@ func main() {
 	ctx := context.Background()
 	dataStore := buildStore(ctx)
 	defer dataStore.Close()
+	if err := dataStore.PurgeExpired(ctx); err != nil {
+		slog.Error("expired data cleanup failed")
+		os.Exit(1)
+	}
+	cleanupContext, stopCleanup := context.WithCancel(ctx)
+	defer stopCleanup()
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-cleanupContext.Done():
+				return
+			case <-ticker.C:
+				purgeContext, cancel := context.WithTimeout(cleanupContext, 20*time.Second)
+				if err := dataStore.PurgeExpired(purgeContext); err != nil {
+					slog.Error("expired data cleanup failed")
+				}
+				cancel()
+			}
+		}
+	}()
 	hub := eventhub.New()
 	executionEnvironment := buildEnvironment(ctx)
 	provider := buildProvider(ctx, executionEnvironment)
@@ -49,6 +71,28 @@ func main() {
 		os.Exit(1)
 	}
 	api := httpapi.New(dataStore, hub, provider, agentRunner, taskRunner, origins, displayName, executionEnvironment)
+	environmentInfo, _ := executionEnvironment.Inspect(ctx)
+	authConfig, err := httpapi.AuthConfigFromEnvironment(filepath.Join(environmentInfo.Paths.Home, "session.key"))
+	if err != nil {
+		slog.Error("authentication configuration failed", "error", err)
+		os.Exit(1)
+	}
+	auth, err := httpapi.NewAuth(authConfig)
+	if err != nil {
+		slog.Error("authentication configuration failed", "error", err)
+		os.Exit(1)
+	}
+	if err := auth.ValidateIssuer(ctx); err != nil {
+		slog.Error("SSO configuration failed", "error", err)
+		os.Exit(1)
+	}
+	for _, origin := range origins {
+		if strings.TrimSpace(origin) == "*" {
+			slog.Error("credentialed browser sessions require explicit ALLOWED_ORIGINS")
+			os.Exit(1)
+		}
+	}
+	api.SetAuth(auth)
 	server := &http.Server{Addr: ":" + env("PORT", "8080"), Handler: api.Handler(), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 75 * time.Second}
 	go func() {
 		info := provider.Info()

@@ -39,6 +39,21 @@ func TestDefinitionsExposeOnlyAuthorizedEnvironmentTools(t *testing.T) {
 	}
 }
 
+func TestVisitorsCannotUseOwnerTools(t *testing.T) {
+	r := NewRegistry(store.NewMemoryStore(), testEnvironment(t, []environment.Capability{environment.CanShell, environment.CanReadFiles}))
+	for _, actor := range []string{"anon:visitor", "sso:member"} {
+		definitions := r.DefinitionsFor(actor)
+		if len(definitions) != 1 || definitions[0].Name != "memory_remember" {
+			t.Fatal("owner tools exposed to visitor", definitions)
+		}
+		for _, name := range []string{"environment_exec", "workspace_read_file", "skill_load", "mcp_remote_tool"} {
+			if _, err := r.Execute(context.Background(), actor, llm.ToolCall{Name: name, Arguments: json.RawMessage(`{}`)}); err == nil {
+				t.Fatal("visitor executed owner tool", name)
+			}
+		}
+	}
+}
+
 func TestEnvironmentExecRunsAuthorizedCommandAndEmitsAuditMetadata(t *testing.T) {
 	registry := NewRegistry(store.NewMemoryStore(), testEnvironment(t, []environment.Capability{environment.CanShell}))
 	arguments, err := json.Marshal(map[string]any{

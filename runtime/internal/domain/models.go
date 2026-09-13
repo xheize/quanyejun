@@ -32,34 +32,38 @@ type Identity struct {
 }
 
 type Message struct {
-	ID             string    `json:"id"`
-	ActorID        string    `json:"actorId"`
-	ConversationID string    `json:"conversationId"`
-	Role           string    `json:"role"`
-	Content        string    `json:"content"`
-	CreatedAt      time.Time `json:"createdAt"`
+	ExpiresAt      *time.Time `json:"expiresAt,omitempty"`
+	ID             string     `json:"id"`
+	ActorID        string     `json:"actorId"`
+	ConversationID string     `json:"conversationId"`
+	Role           string     `json:"role"`
+	Content        string     `json:"content"`
+	CreatedAt      time.Time  `json:"createdAt"`
 }
 
 type Memory struct {
-	ID        string    `json:"id"`
-	ActorID   string    `json:"actorId"`
-	Content   string    `json:"content"`
-	CreatedAt time.Time `json:"createdAt"`
+	ExpiresAt *time.Time `json:"expiresAt,omitempty"`
+	ID        string     `json:"id"`
+	ActorID   string     `json:"actorId"`
+	Content   string     `json:"content"`
+	CreatedAt time.Time  `json:"createdAt"`
 }
 
 type Task struct {
-	ID        string    `json:"id"`
-	ActorID   string    `json:"actorId"`
-	Title     string    `json:"title"`
-	Type      string    `json:"type"`
-	Status    string    `json:"status"`
-	Progress  int       `json:"progress"`
-	Result    string    `json:"result,omitempty"`
-	CreatedAt time.Time `json:"createdAt"`
-	UpdatedAt time.Time `json:"updatedAt"`
+	ExpiresAt *time.Time `json:"expiresAt,omitempty"`
+	ID        string     `json:"id"`
+	ActorID   string     `json:"actorId"`
+	Title     string     `json:"title"`
+	Type      string     `json:"type"`
+	Status    string     `json:"status"`
+	Progress  int        `json:"progress"`
+	Result    string     `json:"result,omitempty"`
+	CreatedAt time.Time  `json:"createdAt"`
+	UpdatedAt time.Time  `json:"updatedAt"`
 }
 
 type Event struct {
+	ExpiresAt      *time.Time     `json:"expiresAt,omitempty"`
 	ID             string         `json:"id"`
 	Type           string         `json:"type"`
 	Source         string         `json:"source"`
@@ -70,27 +74,29 @@ type Event struct {
 }
 
 type AgentRun struct {
-	ID             string    `json:"id"`
-	IdentityID     string    `json:"identityId"`
-	ActorID        string    `json:"actorId"`
-	ConversationID string    `json:"conversationId"`
-	ParentRunID    string    `json:"parentRunId,omitempty"`
-	InputMessageID string    `json:"inputMessageId,omitempty"`
-	Kind           string    `json:"kind"`
-	Provider       string    `json:"provider"`
-	Model          string    `json:"model,omitempty"`
-	Status         string    `json:"status"`
-	Goal           string    `json:"goal"`
-	Result         string    `json:"result,omitempty"`
-	Error          string    `json:"error,omitempty"`
-	Attempt        int       `json:"attempt"`
-	CreatedAt      time.Time `json:"createdAt"`
-	UpdatedAt      time.Time `json:"updatedAt"`
-	StartedAt      time.Time `json:"startedAt,omitempty"`
-	CompletedAt    time.Time `json:"completedAt,omitempty"`
+	ExpiresAt      *time.Time `json:"expiresAt,omitempty"`
+	ID             string     `json:"id"`
+	IdentityID     string     `json:"identityId"`
+	ActorID        string     `json:"actorId"`
+	ConversationID string     `json:"conversationId"`
+	ParentRunID    string     `json:"parentRunId,omitempty"`
+	InputMessageID string     `json:"inputMessageId,omitempty"`
+	Kind           string     `json:"kind"`
+	Provider       string     `json:"provider"`
+	Model          string     `json:"model,omitempty"`
+	Status         string     `json:"status"`
+	Goal           string     `json:"goal"`
+	Result         string     `json:"result,omitempty"`
+	Error          string     `json:"error,omitempty"`
+	Attempt        int        `json:"attempt"`
+	CreatedAt      time.Time  `json:"createdAt"`
+	UpdatedAt      time.Time  `json:"updatedAt"`
+	StartedAt      time.Time  `json:"startedAt,omitempty"`
+	CompletedAt    time.Time  `json:"completedAt,omitempty"`
 }
 
 type RunStep struct {
+	ExpiresAt          *time.Time      `json:"expiresAt,omitempty"`
 	ID                 string          `json:"id"`
 	RunID              string          `json:"runId"`
 	Sequence           int             `json:"sequence"`

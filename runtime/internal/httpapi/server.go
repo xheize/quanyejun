@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"crypto/rand"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -20,6 +21,7 @@ import (
 )
 
 type Server struct {
+	auth           *Auth
 	store          store.Store
 	hub            *eventhub.Hub
 	provider       llm.Provider
@@ -35,13 +37,32 @@ func New(store store.Store, hub *eventhub.Hub, provider llm.Provider, agentRunne
 	for _, origin := range origins {
 		allowed[strings.TrimSpace(origin)] = struct{}{}
 	}
-	return &Server{store: store, hub: hub, provider: provider, agentRunner: agentRunner, taskRunner: taskRunner, displayName: domain.NormalizeDisplayName(displayName), environment: executionEnvironment, allowedOrigins: allowed}
+	key := make([]byte, 32)
+	if _, err := rand.Read(key); err != nil {
+		panic(err)
+	}
+	auth, err := NewAuth(AuthConfig{Key: key})
+	if err != nil {
+		panic(err)
+	}
+	return &Server{auth: auth, store: store, hub: hub, provider: provider, agentRunner: agentRunner, taskRunner: taskRunner, displayName: domain.NormalizeDisplayName(displayName), environment: executionEnvironment, allowedOrigins: allowed}
 }
 
 func (s *Server) Handler() http.Handler {
 	router := gin.New()
-	router.Use(gin.Logger(), gin.Recovery(), s.cors())
+	router.Use(gin.Recovery(), s.cors())
+	// Do not log callback codes, cookies, or anonymous request contents.
+	router.Use(func(c *gin.Context) {
+		c.Header("Cache-Control", "no-store")
+		c.Header("Referrer-Policy", "no-referrer")
+		c.Next()
+	})
+	router.GET("/auth/login", s.auth.login)
+	router.GET("/auth/callback", s.auth.callback)
+	router.POST("/auth/logout", s.auth.logout)
 	router.GET("/healthz", s.health)
+	router.Use(s.auth.identify)
+	router.GET("/api/session", func(c *gin.Context) { c.JSON(200, principal(c)) })
 	router.GET("/api/bootstrap", s.bootstrap)
 	router.GET("/api/environment", s.environmentInfo)
 	router.POST("/api/messages", s.createMessage)
@@ -55,14 +76,23 @@ func (s *Server) Handler() http.Handler {
 func (s *Server) cors() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		origin := c.GetHeader("Origin")
-		if s.originAllowed(origin) {
+		if origin != "" && !s.originAllowed(origin) {
+			c.AbortWithStatus(http.StatusForbidden)
+			return
+		}
+		if origin != "" {
 			c.Header("Access-Control-Allow-Origin", origin)
 			c.Header("Vary", "Origin")
+			c.Header("Access-Control-Allow-Credentials", "true")
 		}
-		c.Header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		c.Header("Access-Control-Allow-Headers", "Content-Type, X-Requested-With")
 		c.Header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 		if c.Request.Method == http.MethodOptions {
 			c.AbortWithStatus(http.StatusNoContent)
+			return
+		}
+		if c.Request.Method != http.MethodGet && c.Request.Method != http.MethodHead && c.GetHeader("X-Requested-With") != "QuanYejun" {
+			c.AbortWithStatus(http.StatusForbidden)
 			return
 		}
 		c.Next()
@@ -126,7 +156,7 @@ func (s *Server) bootstrap(c *gin.Context) {
 		fail(c, err)
 		return
 	}
-	events, err := s.store.ListEventsAfter(c.Request.Context(), "", 30)
+	events, err := s.store.ListEventsAfter(c.Request.Context(), actorID, "", 30)
 	if err != nil {
 		fail(c, err)
 		return
@@ -136,7 +166,7 @@ func (s *Server) bootstrap(c *gin.Context) {
 		fail(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"identity": identity, "environment": environmentInfo, "provider": s.provider.Info(), "messages": messages, "memories": memories, "tasks": tasksList, "runs": runs, "events": events})
+	c.JSON(http.StatusOK, gin.H{"session": principal(c), "identity": identity, "environment": environmentInfo, "provider": s.provider.Info(), "messages": messages, "memories": memories, "tasks": tasksList, "runs": runs, "events": events})
 }
 
 type messageInput struct {
@@ -150,17 +180,14 @@ func (s *Server) createMessage(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid JSON body"})
 		return
 	}
-	input.ActorID = strings.TrimSpace(input.ActorID)
+	input.ActorID = actor(c)
 	input.Content = strings.TrimSpace(input.Content)
-	if input.ActorID == "" {
-		input.ActorID = "person_example"
-	}
 	if input.Content == "" || len([]rune(input.Content)) > 8000 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "content must be between 1 and 8000 characters"})
 		return
 	}
 	now := time.Now().UTC()
-	userMessage := domain.Message{ID: uuid.NewString(), ActorID: input.ActorID, ConversationID: domain.ConversationID, Role: "user", Content: input.Content, CreatedAt: now}
+	userMessage := domain.Message{ID: uuid.NewString(), ActorID: input.ActorID, ConversationID: domain.ConversationID, Role: "user", Content: input.Content, CreatedAt: now, ExpiresAt: domain.Expiry(c.Request.Context(), input.ActorID, now, nil)}
 	if err := s.store.AddMessage(c.Request.Context(), userMessage); err != nil {
 		fail(c, err)
 		return
@@ -180,7 +207,7 @@ func (s *Server) createMessage(c *gin.Context) {
 
 func (s *Server) getRun(c *gin.Context) {
 	run, err := s.store.GetAgentRun(c.Request.Context(), c.Param("id"))
-	if err != nil {
+	if err != nil || run.ActorID != actor(c) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "run not found"})
 		return
 	}
@@ -200,9 +227,7 @@ type taskInput struct {
 func (s *Server) createDemoTask(c *gin.Context) {
 	var input taskInput
 	_ = c.ShouldBindJSON(&input)
-	if input.ActorID == "" {
-		input.ActorID = "person_example"
-	}
+	input.ActorID = actor(c)
 	if input.DurationSeconds <= 0 {
 		input.DurationSeconds = 12
 	}
@@ -217,7 +242,7 @@ func (s *Server) createDemoTask(c *gin.Context) {
 	c.JSON(http.StatusAccepted, task)
 }
 func (s *Server) listEvents(c *gin.Context) {
-	events, err := s.store.ListEventsAfter(c.Request.Context(), c.Query("after"), 100)
+	events, err := s.store.ListEventsAfter(c.Request.Context(), actor(c), c.Query("after"), 100)
 	if err != nil {
 		fail(c, err)
 		return
@@ -244,33 +269,56 @@ func (s *Server) websocket(c *gin.Context) {
 			}
 		}
 	}()
-	replay, err := s.store.ListEventsAfter(c.Request.Context(), c.Query("lastEventId"), 100)
+	events, unsubscribe := s.hub.Subscribe()
+	defer unsubscribe()
+	replay, err := s.store.ListEventsAfter(c.Request.Context(), actor(c), c.Query("lastEventId"), 100)
 	if err != nil {
 		return
 	}
 	for _, event := range replay {
+		if event.ActorID != actor(c) || domain.Expired(event.ExpiresAt) {
+			continue
+		}
 		if err := connection.WriteJSON(event); err != nil {
 			return
 		}
 	}
-	events, unsubscribe := s.hub.Subscribe()
-	defer unsubscribe()
 	ticker := time.NewTicker(25 * time.Second)
 	defer ticker.Stop()
+	sessionExpiry := time.Unix(c.GetInt64("sessionExpires"), 0)
+	expiryTimer := time.NewTimer(time.Until(sessionExpiry))
+	defer expiryTimer.Stop()
 	for {
 		select {
 		case event, ok := <-events:
 			if !ok {
 				return
 			}
+			if !sessionExpiry.After(time.Now()) {
+				return
+			}
+			if event.ActorID != actor(c) || domain.Expired(event.ExpiresAt) {
+				continue
+			}
 			if err := connection.WriteJSON(event); err != nil {
 				return
 			}
 		case <-ticker.C:
+			var session browserSession
+			if !s.auth.open(c, sessionCookie, &session) || session.Expires <= time.Now().Unix() {
+				return
+			}
+			if session.AccessToken != "" {
+				if _, err := s.auth.userInfo(c, session.AccessToken); err != nil {
+					return
+				}
+			}
 			if err := connection.WriteControl(websocket.PingMessage, []byte("ping"), time.Now().Add(5*time.Second)); err != nil {
 				return
 			}
 		case <-done:
+			return
+		case <-expiryTimer.C:
 			return
 		case <-c.Request.Context().Done():
 			return
@@ -280,19 +328,19 @@ func (s *Server) websocket(c *gin.Context) {
 
 func (s *Server) emit(ctx context.Context, eventType, source, actorID string, payload map[string]any) error {
 	event := domain.Event{ID: uuid.NewString(), Type: eventType, Source: source, ActorID: actorID, ConversationID: domain.ConversationID, Timestamp: time.Now().UTC(), Payload: payload}
+	event.ExpiresAt = domain.EventExpiry(ctx, event)
+	if domain.Expired(event.ExpiresAt) {
+		return nil
+	}
 	if err := s.store.AppendEvent(ctx, event); err != nil {
 		return err
 	}
 	s.hub.Publish(event)
 	return nil
 }
-func actor(c *gin.Context) string {
-	value := strings.TrimSpace(c.Query("actorId"))
-	if value == "" {
-		return "person_example"
-	}
-	return value
-}
+func actor(c *gin.Context) string { return principal(c).ActorID }
 func fail(c *gin.Context, _ error) {
 	c.JSON(http.StatusInternalServerError, gin.H{"error": "runtime operation failed"})
 }
+
+func (s *Server) SetAuth(auth *Auth) { s.auth = auth }

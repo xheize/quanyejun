@@ -64,6 +64,9 @@ func TestRunStepEventRedactsInputAndOutput(t *testing.T) {
 	defer unsubscribe()
 	runner := &Runner{store: dataStore, hub: hub}
 	run := domain.AgentRun{ID: "run", ActorID: "actor", ConversationID: domain.ConversationID}
+	if err := dataStore.CreateAgentRun(context.Background(), run); err != nil {
+		t.Fatal(err)
+	}
 	step := domain.RunStep{ID: "step", RunID: run.ID, Kind: "tool_result", Input: json.RawMessage(`{"secret":"input"}`), Output: json.RawMessage(`{"secret":"output"}`)}
 	if err := runner.appendStep(context.Background(), run, step); err != nil {
 		t.Fatal(err)

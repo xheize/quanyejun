@@ -29,14 +29,24 @@ func TestMessageRoundTripAppearsInBootstrap(t *testing.T) {
 	body, _ := json.Marshal(map[string]string{"actorId": "person_example", "content": "이 문장을 기억해"})
 	request := httptest.NewRequest(http.MethodPost, "/api/messages", bytes.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-Requested-With", "QuanYejun")
 	response := httptest.NewRecorder()
 	server.Handler().ServeHTTP(response, request)
 	if response.Code != http.StatusAccepted {
 		t.Fatalf("create message status = %d, body = %s", response.Code, response.Body.String())
 	}
-	waitForRun(t, dataStore)
+	var created struct {
+		UserMessage struct {
+			ActorID string `json:"actorId"`
+		} `json:"userMessage"`
+	}
+	_ = json.Unmarshal(response.Body.Bytes(), &created)
+	waitForRun(t, dataStore, created.UserMessage.ActorID)
 
 	bootstrapRequest := httptest.NewRequest(http.MethodGet, "/api/bootstrap?actorId=person_example", nil)
+	for _, cookie := range response.Result().Cookies() {
+		bootstrapRequest.AddCookie(cookie)
+	}
 	bootstrapResponse := httptest.NewRecorder()
 	server.Handler().ServeHTTP(bootstrapResponse, bootstrapRequest)
 	if bootstrapResponse.Code != http.StatusOK {
@@ -71,8 +81,8 @@ func TestMessageRoundTripAppearsInBootstrap(t *testing.T) {
 	if provider.lastRequest.IdentityName != "루멘" {
 		t.Fatalf("provider identity name = %q", provider.lastRequest.IdentityName)
 	}
-	if len(payload.Memories) != 2 {
-		t.Fatalf("memories = %d, want 2", len(payload.Memories))
+	if len(payload.Memories) != 1 {
+		t.Fatalf("memories = %d, want 1", len(payload.Memories))
 	}
 	if len(payload.Events) < 8 {
 		t.Fatalf("events = %d, want persisted run and tool events", len(payload.Events))
@@ -102,6 +112,7 @@ func TestRejectsEmptyMessage(t *testing.T) {
 	server := newTestServer(t, dataStore, hub, llm.NewLocalProvider(), []string{"*"}, "")
 	request := httptest.NewRequest(http.MethodPost, "/api/messages", bytes.NewBufferString(`{"content":"  "}`))
 	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-Requested-With", "QuanYejun")
 	response := httptest.NewRecorder()
 	server.Handler().ServeHTTP(response, request)
 	if response.Code != http.StatusBadRequest {
@@ -116,7 +127,14 @@ func TestWebSocketReceivesPersistedEvents(t *testing.T) {
 	httpServer := httptest.NewServer(server.Handler())
 	defer httpServer.Close()
 
+	bootstrap, err := http.Get(httpServer.URL + "/api/bootstrap")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bootstrap.Body.Close()
+	cookie := bootstrap.Cookies()[0]
 	header := http.Header{"Origin": []string{"http://localhost:3000"}}
+	header.Set("Cookie", cookie.String())
 	connection, _, err := websocket.DefaultDialer.Dial(strings.Replace(httpServer.URL, "http", "ws", 1)+"/ws", header)
 	if err != nil {
 		t.Fatal(err)
@@ -124,7 +142,11 @@ func TestWebSocketReceivesPersistedEvents(t *testing.T) {
 	defer connection.Close()
 
 	body := bytes.NewBufferString(`{"actorId":"person_example","content":"웹소켓 확인"}`)
-	response, err := http.Post(httpServer.URL+"/api/messages", "application/json", body)
+	req, _ := http.NewRequest("POST", httpServer.URL+"/api/messages", body)
+	req.AddCookie(cookie)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Requested-With", "QuanYejun")
+	response, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,11 +177,11 @@ func newTestServer(t *testing.T, dataStore store.Store, hub *eventhub.Hub, provi
 	return New(dataStore, hub, provider, agentRunner, tasks.NewRunner(dataStore, hub), origins, displayName, executionEnvironment)
 }
 
-func waitForRun(t *testing.T, dataStore store.Store) {
+func waitForRun(t *testing.T, dataStore store.Store, actorID string) {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		runs, err := dataStore.ListAgentRuns(context.Background(), "person_example", 1)
+		runs, err := dataStore.ListAgentRuns(context.Background(), actorID, 1)
 		if err != nil {
 			t.Fatal(err)
 		}

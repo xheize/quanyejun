@@ -205,7 +205,7 @@ func (p *OpenAIProvider) Turn(ctx context.Context, input Request) (Result, error
 			items = append(items, map[string]any{"type": "function_call_output", "call_id": output.CallID, "output": output.Output})
 		}
 	}
-	payload := map[string]any{"model": p.info.Model, "instructions": systemPrompt(input.IdentityName, input.Memories), "input": items, "store": p.store}
+	payload := map[string]any{"model": p.info.Model, "instructions": systemPrompt(input.IdentityName, input.Memories), "input": items, "store": p.store && !domain.Anonymous(input.ActorID)}
 	if len(input.Tools) > 0 {
 		payload["tools"] = responseTools(input.Tools)
 	}

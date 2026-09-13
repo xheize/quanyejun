@@ -15,7 +15,7 @@ func TestEventsCanReplayAfterCursor(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	events, err := dataStore.ListEventsAfter(context.Background(), "one", 10)
+	events, err := dataStore.ListEventsAfter(context.Background(), "", "one", 10)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -131,6 +131,12 @@ func (r *Registry) Definitions() []llm.ToolDefinition {
 }
 
 func (r *Registry) Execute(ctx context.Context, actorID string, call llm.ToolCall) (Result, error) {
+	if (domain.Anonymous(actorID) || strings.HasPrefix(actorID, "sso:")) && call.Name != "memory_remember" {
+		return Result{}, fmt.Errorf("tool not granted to visitor")
+	}
+	if domain.Expired(domain.ContextExpiry(ctx)) {
+		return Result{}, fmt.Errorf("context expired")
+	}
 	switch call.Name {
 	case "environment_inspect":
 		var input struct{}
@@ -229,7 +235,7 @@ func (r *Registry) Execute(ctx context.Context, actorID string, call llm.ToolCal
 				return Result{Output: string(encoded)}, nil
 			}
 		}
-		memory := domain.Memory{ID: uuid.NewString(), ActorID: actorID, Content: input.Content, CreatedAt: time.Now().UTC()}
+		memory := domain.Memory{ID: uuid.NewString(), ActorID: actorID, Content: input.Content, CreatedAt: time.Now().UTC(), ExpiresAt: domain.ContextExpiry(ctx)}
 		if err := r.store.AddMemory(ctx, memory); err != nil {
 			return Result{}, fmt.Errorf("store memory: %w", err)
 		}
@@ -343,4 +349,20 @@ func containsCapability(values []environment.Capability, target environment.Capa
 
 func boolPointer(value bool) *bool {
 	return &value
+}
+
+// Visitors cannot use the owner's filesystem, CLI or external MCP credentials.
+// Explicit owner grants can be added separately from identity authentication.
+func (r *Registry) DefinitionsFor(actorID string) []llm.ToolDefinition {
+	definitions := r.Definitions()
+	if !domain.Anonymous(actorID) && !strings.HasPrefix(actorID, "sso:") {
+		return definitions
+	}
+	allowed := make([]llm.ToolDefinition, 0, 1)
+	for _, d := range definitions {
+		if d.Name == "memory_remember" {
+			allowed = append(allowed, d)
+		}
+	}
+	return allowed
 }
