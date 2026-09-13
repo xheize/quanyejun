@@ -26,6 +26,12 @@ services:
       DATABASE_URL: postgres://quanyejun:quanyejun@postgres:5432/quanyejun?sslmode=disable
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3000}
       IDENTITY_DISPLAY_NAME: ${IDENTITY_DISPLAY_NAME:-QuanYejun}
+      SSO_ISSUER_URL: ${SSO_ISSUER_URL:-}
+      SSO_CLIENT_ID: ${SSO_CLIENT_ID:-}
+      SSO_CLIENT_SECRET: ${SSO_CLIENT_SECRET:-}
+      SSO_REDIRECT_URL: ${SSO_REDIRECT_URL:-http://localhost:8080/auth/callback}
+      WEB_PUBLIC_URL: ${WEB_PUBLIC_URL:-http://localhost:3000}
+      SESSION_ENCRYPTION_KEY: ${SESSION_ENCRYPTION_KEY:-}
       LLM_PROVIDER: ${LLM_PROVIDER:-builtin}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_MODEL: ${OPENAI_MODEL:-}
