@@ -2,11 +2,11 @@
 
 import { FormEvent, KeyboardEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-type Message = { id: string; role: "user" | "assistant"; content: string; createdAt: string };
-type RuntimeTask = { id: string; title: string; status: string; progress: number; result?: string; createdAt: string; updatedAt: string };
+type Message = { expiresAt?: string; id: string; role: "user" | "assistant"; content: string; createdAt: string };
+type RuntimeTask = { expiresAt?: string; id: string; title: string; status: string; progress: number; result?: string; createdAt: string; updatedAt: string };
 type AgentRun = { id: string; status: string; goal: string; result?: string; error?: string; createdAt: string; updatedAt: string };
-type Memory = { id: string; content: string; createdAt: string };
-type RuntimeEvent = { id: string; type: string; timestamp: string; payload: Record<string, unknown> };
+type Memory = { expiresAt?: string; id: string; content: string; createdAt: string };
+type RuntimeEvent = { expiresAt?: string; id: string; type: string; timestamp: string; payload: Record<string, unknown> };
 type ProviderInfo = { id: string; label: string; model?: string; source: string };
 type EnvironmentInfo = {
   kind: string;
@@ -17,7 +17,9 @@ type EnvironmentInfo = {
   authority: { mode: string; granted: string[] };
   tools: { name: string; path?: string; available: boolean }[];
 };
+type VisitorSession = { id: string; role: "anonymous" | "authenticated"; loginEnabled: boolean };
 type Bootstrap = {
+  session: VisitorSession;
   identity: { id: string; name: string; status: string };
   environment: EnvironmentInfo;
   provider: ProviderInfo;
@@ -28,7 +30,7 @@ type Bootstrap = {
   events: RuntimeEvent[];
 };
 
-const actorId = "person_example";
+
 const apiBase = (process.env.NEXT_PUBLIC_RUNTIME_URL || "http://localhost:8080").replace(/\/$/, "");
 const seedMessages: Message[] = [
   { id: "seed-1", role: "assistant", content: "좋은 아침이에요. 하나의 지속되는 Identity로 준비되어 있어요. 런타임을 연결하면 이 대화와 작업 상태가 PostgreSQL에 이어서 저장됩니다.", createdAt: "" },
@@ -72,6 +74,7 @@ function relativeTime(value: string) {
 }
 
 export function Dashboard() {
+  const [session, setSession] = useState<VisitorSession | null>(null);
   const [identityName, setIdentityName] = useState("QuanYejun");
   const [messages, setMessages] = useState<Message[]>(seedMessages);
   const [tasks, setTasks] = useState<RuntimeTask[]>([]);
@@ -109,10 +112,18 @@ export function Dashboard() {
 
     async function hydrate() {
       try {
-        const response = await fetch(`${apiBase}/api/bootstrap?actorId=${actorId}`);
+        const response = await fetch(`${apiBase}/api/bootstrap`, { credentials: "include" });
+        if (cancelled) return;
+        if (response.status === 401) {
+          setMessages([]); setMemories([]); setTasks([]); setEvents([]);
+          lastEventId.current = "";
+          setSession({ id: "", role: "anonymous", loginEnabled: true });
+          setNotice("로그인 세션을 확인할 수 없습니다. 다시 로그인해주세요.");
+        }
         if (!response.ok) throw new Error("runtime unavailable");
         const data = await response.json() as Bootstrap;
         if (cancelled) return;
+        setSession(data.session);
         setIdentityName(data.identity?.name || "QuanYejun");
         setMessages(data.messages.length ? data.messages : seedMessages);
         setTasks(data.tasks || []);
@@ -135,7 +146,7 @@ export function Dashboard() {
       setConnection("connecting");
       const wsBase = apiBase.replace(/^http/, "ws");
       const cursor = encodeURIComponent(lastEventId.current);
-      socket = new WebSocket(`${wsBase}/ws?actorId=${actorId}&lastEventId=${cursor}`);
+      socket = new WebSocket(`${wsBase}/ws?lastEventId=${cursor}`);
       socket.onopen = () => setConnection("online");
       socket.onmessage = (message) => {
         try { applyEvent(JSON.parse(message.data) as RuntimeEvent); } catch { /* ignore malformed external events */ }
@@ -143,7 +154,7 @@ export function Dashboard() {
       socket.onclose = () => {
         if (!cancelled) {
           setConnection("offline");
-          retry = setTimeout(connect, 1800);
+          retry = setTimeout(hydrate, 1800);
         }
       };
       socket.onerror = () => socket?.close();
@@ -171,8 +182,9 @@ export function Dashboard() {
     try {
       const response = await fetch(`${apiBase}/api/messages`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ actorId, content }),
+        credentials: "include",
+        headers: { "Content-Type": "application/json", "X-Requested-With": "QuanYejun" },
+        body: JSON.stringify({ content }),
       });
       if (!response.ok) throw new Error("message failed");
       const result = await response.json() as { userMessage: Message; runId: string; run: AgentRun };
@@ -196,8 +208,9 @@ export function Dashboard() {
     try {
       const response = await fetch(`${apiBase}/api/tasks/demo`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ actorId, durationSeconds: 12 }),
+        credentials: "include",
+        headers: { "Content-Type": "application/json", "X-Requested-With": "QuanYejun" },
+        body: JSON.stringify({ durationSeconds: 12 }),
       });
       if (!response.ok) throw new Error("task failed");
       const task = await response.json() as RuntimeTask;
@@ -205,6 +218,25 @@ export function Dashboard() {
     } catch {
       setNotice("작업을 시작하려면 Go 런타임을 먼저 실행해주세요.");
     }
+  }
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      const live = (item: { expiresAt?: string }) => !item.expiresAt || Date.parse(item.expiresAt) > Date.now();
+      setMessages(items => items.filter(live));
+      setMemories(items => items.filter(live));
+      setTasks(items => items.filter(live));
+      setEvents(items => items.filter(live));
+    }, 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  async function logout() {
+    try {
+      const response = await fetch(`${apiBase}/auth/logout`, { method: "POST", credentials: "include", headers: { "X-Requested-With": "QuanYejun" } });
+      if (!response.ok) throw new Error("logout failed");
+      window.location.reload();
+    } catch { setNotice("로그아웃하지 못했습니다. 다시 시도해주세요."); }
   }
 
   const activeTask = [...tasks].reverse().find((task) => task.status === "running" || task.status === "queued");
@@ -221,6 +253,11 @@ export function Dashboard() {
         <div className="identity-copy">
           <p className="eyebrow">PERSISTENT IDENTITY</p><h1>{identityName}</h1>
           <p className="identity-state"><span className={`status-dot ${connection}`} /> {connection === "online" ? "깨어 있음" : connection === "connecting" ? "연결 중" : "런타임 대기"}</p>
+        </div>
+        <div className="session-controls">
+          <p>{session?.role === "authenticated" ? "로그인됨 · 대화가 계속 이어집니다" : "익명 · 각 기록은 생성 후 72시간까지만 보관됩니다"}</p>
+          {session?.role === "authenticated" ? <button className="task-launch" type="button" onClick={logout}>로그아웃</button> : session?.loginEnabled ? <a className="task-launch" href={`${apiBase}/auth/login`}>SSO 로그인</a> : <span>로그인 준비 중</span>}
+          {session?.role !== "authenticated" && session?.loginEnabled && <p>로그인하면 회원 대화로 전환됩니다. 익명 기록은 이전되지 않습니다.</p>}
         </div>
         <nav className="primary-nav" aria-label="주요 메뉴">
           <a className="nav-item active" href="#conversation"><span>◉</span> 대화 <small>{messages.length}</small></a>
@@ -243,7 +280,7 @@ export function Dashboard() {
 
       <section className="conversation" id="conversation">
         <header className="conversation-header">
-          <div><p className="eyebrow">하나의 이어지는 대화</p><h2>소유자님과 {identityName}</h2></div>
+          <div><p className="eyebrow">하나의 이어지는 대화</p><h2>{session?.role === "authenticated" ? "회원님" : "방문자님"}과 {identityName}</h2></div>
           <button className="task-launch" type="button" onClick={startDemoTask}>비동기 작업 실행</button>
         </header>
         <div className="conversation-body" aria-live="polite">
@@ -252,7 +289,7 @@ export function Dashboard() {
             <article className={`message ${message.role === "user" ? "user-message" : "entity-message"}`} key={message.id}>
               {message.role === "assistant" && <div className="avatar">{identityInitial}</div>}
               <div>
-                <div className="message-meta"><strong>{message.role === "user" ? "소유자" : identityName}</strong><time>{shortTime(message.createdAt)}</time></div>
+                <div className="message-meta"><strong>{message.role === "user" ? "나" : identityName}</strong><time>{shortTime(message.createdAt)}</time></div>
                 <div className="message-bubble"><p>{message.content}</p></div>
               </div>
             </article>
