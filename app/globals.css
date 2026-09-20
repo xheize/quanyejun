@@ -74,7 +74,9 @@ a { color: inherit; text-decoration: none; }
 .conversation-header { height: 93px; padding: 24px 34px 20px; border-bottom: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; }
 .conversation-header h2, .activity-panel h2 { margin: 5px 0 0; font: 700 18px/1.2 Georgia, serif; }
 .task-launch { border: 1px solid var(--ink); background: var(--ink); color: var(--lime); padding: 9px 12px; border-radius: 9px; font-size: 10px; font-weight: 750; cursor: pointer; }
-.task-launch:hover { transform: translateY(-1px); box-shadow: 0 5px 14px rgba(23,24,19,.15); }
+.task-launch:disabled { opacity: .45; cursor: not-allowed; }
+.task-launch:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 5px 14px rgba(23,24,19,.15); }
+.preview-notice { margin: 0 0 24px; padding: 12px 15px; border: 1px solid var(--line); border-radius: 10px; background: var(--paper); color: #62665d; font-size: 12px; line-height: 1.6; }
 .conversation-body { padding: 30px clamp(26px, 5vw, 74px) 24px; overflow: auto; }
 .date-divider { display: flex; align-items: center; color: #9a9d94; font-size: 9px; margin-bottom: 28px; }
 .date-divider::before, .date-divider::after { content: ""; height: 1px; flex: 1; background: #ecece7; }

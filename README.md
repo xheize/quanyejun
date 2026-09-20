@@ -55,16 +55,26 @@ skills/             Provider 독립적인 로컬 SKILL.md 예제
 
    ```powershell
    pnpm install
+   $env:NEXT_PUBLIC_RUNTIME_URL = "http://localhost:8080"
    pnpm dev
    ```
 
 웹은 `http://localhost:3000`, 런타임은 `http://localhost:8080`에서 실행됩니다. PostgreSQL 없이 런타임만 실행하면 메모리 저장소를 사용하므로 동작은 확인할 수 있지만 재시작 후 데이터는 사라집니다.
+
+### 프론트 단독 미리보기
+
+`NEXT_PUBLIC_RUNTIME_URL`이 비어 있으면 API·WebSocket 요청 없이 미리보기를 표시합니다. 대화 입력·전송, 작업 실행, 별칭 저장은 연결 전까지 비활성화됩니다.
+
+백엔드를 연결하려면 **빌드 전에** `NEXT_PUBLIC_RUNTIME_URL`을 브라우저에서 접근 가능한 API 주소로 설정하세요(예: `https://runtime.example.com`). 주소 변경 후에는 프론트를 다시 빌드·배포해야 합니다. HTTPS 웹에는 HTTPS API를 사용하고 백엔드 `ALLOWED_ORIGINS`에도 웹 주소를 등록하세요.
+
+최초 연결 이후 HTTP·WebSocket 재시도를 페이지당 합계 최대 10회 수행합니다(간격 2.5초). 연결에 성공해도 예산은 초기화되지 않습니다. 한도에 도달하면 자동 재시도를 중단하고 새로고침 안내를 표시합니다.
 
 ### Docker Compose로 전체 실행
 
 루트의 `Dockerfile.frontend`는 웹 UI(Node.js, 포트 3000), `Dockerfile.backend`는 Go 런타임(API, 포트 8080)을 각각 빌드합니다. 두 파일 모두 저장소 루트를 빌드 컨텍스트로 사용하며, `compose.yaml`은 각 Dockerfile로 두 서비스와 PostgreSQL을 함께 실행합니다.
 
 ```powershell
+$env:NEXT_PUBLIC_RUNTIME_URL = "http://localhost:8080"
 docker compose up --build
 ```
 

@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, KeyboardEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { connectRuntime, type ConnectionState } from "./runtime-connection";
 
 type Message = { expiresAt?: string; id: string; role: "user" | "assistant"; content: string; createdAt: string };
 type RuntimeTask = { expiresAt?: string; id: string; title: string; status: string; progress: number; result?: string; createdAt: string; updatedAt: string };
@@ -31,15 +32,16 @@ type Bootstrap = {
 };
 
 
-const apiBase = (process.env.NEXT_PUBLIC_RUNTIME_URL || "http://localhost:8080").replace(/\/$/, "");
+const apiBase = (process.env.NEXT_PUBLIC_RUNTIME_URL || "").trim().replace(/\/+$/, "");
 const seedMessages: Message[] = [
   { id: "seed-1", role: "assistant", content: "좋은 아침이에요. 하나의 지속되는 Identity로 준비되어 있어요. 런타임을 연결하면 이 대화와 작업 상태가 PostgreSQL에 이어서 저장됩니다.", createdAt: "" },
 ];
-const previewEvent: RuntimeEvent = { id: "preview", type: "system.ready", timestamp: "", payload: {} };
+const previewEvent: RuntimeEvent = { id: "preview", type: "preview", timestamp: "", payload: {} };
 const previewProvider: ProviderInfo = { id: "builtin", label: "Built-in preview", source: "fallback" };
 const previewEnvironment: EnvironmentInfo = { kind: "local", profile: "preview", os: "unknown", arch: "unknown", capabilities: [], authority: { mode: "internal-only", granted: [] }, tools: [] };
 
 const eventCopy: Record<string, [string, string]> = {
+  "preview": ["미리보기", "서비스 연결 후 실제 활동이 여기에 표시됩니다."],
   "system.ready": ["런타임 준비", "지속 Identity가 입력을 받을 준비를 마쳤습니다."],
   "chat.message": ["새 대화", "대화가 이벤트와 기억 후보로 기록됐습니다."],
   "run.created": ["추론 작업 생성", "요청을 영속 Agent Run으로 등록했습니다."],
@@ -84,7 +86,9 @@ export function Dashboard() {
   const [events, setEvents] = useState<RuntimeEvent[]>([]);
   const [provider, setProvider] = useState<ProviderInfo>(previewProvider);
   const [environment, setEnvironment] = useState<EnvironmentInfo>(previewEnvironment);
-  const [connection, setConnection] = useState<"connecting" | "online" | "offline">("connecting");
+  const [connection, setConnection] = useState<ConnectionState>(apiBase ? "connecting" : "offline");
+  const [retriesExhausted, setRetriesExhausted] = useState(false);
+  const runtimeReady = Boolean(apiBase) && connection === "online" && Boolean(session?.id);
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
   const [notice, setNotice] = useState("");
@@ -107,68 +111,35 @@ export function Dashboard() {
     }
   }, []);
 
-  useEffect(() => {
-    let cancelled = false;
-    let socket: WebSocket | undefined;
-    let retry: ReturnType<typeof setTimeout> | undefined;
-
-    async function hydrate() {
-      try {
-        const response = await fetch(`${apiBase}/api/bootstrap`, { credentials: "include" });
-        if (cancelled) return;
-        if (response.status === 401) {
-          setMessages([]); setMemories([]); setTasks([]); setEvents([]);
-          lastEventId.current = "";
-          setSession({ id: "", role: "anonymous", loginEnabled: true, displayName: "방문자님" });
-          setNotice("로그인 세션을 확인할 수 없습니다. 다시 로그인해주세요.");
-        }
-        if (!response.ok) throw new Error("runtime unavailable");
-        const data = await response.json() as Bootstrap;
-        if (cancelled) return;
-        setSession(data.session);
-        setIdentityName(data.identity?.name || "QuanYejun");
-        setMessages(data.messages.length ? data.messages : seedMessages);
-        setTasks(data.tasks || []);
-        setMemories(data.memories || []);
-        setEvents(data.events || []);
-        setProvider(data.provider || previewProvider);
-        setEnvironment(data.environment || previewEnvironment);
-        lastEventId.current = data.events.at(-1)?.id || "";
-        connect();
-      } catch {
-        if (!cancelled) {
-          setConnection("offline");
-          retry = setTimeout(hydrate, 2500);
-        }
+  useEffect(() => connectRuntime({
+    apiBase,
+    onBootstrap: async (response, signal) => {
+      if (response.status === 401) {
+        setMessages([]); setMemories([]); setTasks([]); setEvents([]);
+        lastEventId.current = "";
+        setSession({ id: "", role: "anonymous", loginEnabled: true, displayName: "방문자님" });
+        setNotice("로그인 세션을 확인할 수 없습니다. 다시 로그인해주세요.");
       }
-    }
-
-    function connect() {
-      if (cancelled) return;
-      setConnection("connecting");
-      const wsBase = apiBase.replace(/^http/, "ws");
-      const cursor = encodeURIComponent(lastEventId.current);
-      socket = new WebSocket(`${wsBase}/ws?lastEventId=${cursor}`);
-      socket.onopen = () => setConnection("online");
-      socket.onmessage = (message) => {
-        try { applyEvent(JSON.parse(message.data) as RuntimeEvent); } catch { /* ignore malformed external events */ }
-      };
-      socket.onclose = () => {
-        if (!cancelled) {
-          setConnection("offline");
-          retry = setTimeout(hydrate, 1800);
-        }
-      };
-      socket.onerror = () => socket?.close();
-    }
-
-    hydrate();
-    return () => {
-      cancelled = true;
-      if (retry) clearTimeout(retry);
-      socket?.close();
-    };
-  }, [applyEvent]);
+      if (!response.ok) throw new Error("runtime unavailable");
+      const data = await response.json() as Bootstrap;
+      if (signal.aborted) return;
+      setSession(data.session);
+      setIdentityName(data.identity?.name || "QuanYejun");
+      setMessages(data.messages.length ? data.messages : seedMessages);
+      setTasks(data.tasks || []);
+      setMemories(data.memories || []);
+      setEvents(data.events || []);
+      setProvider(data.provider || previewProvider);
+      setEnvironment(data.environment || previewEnvironment);
+      lastEventId.current = data.events.at(-1)?.id || "";
+    },
+    cursor: () => lastEventId.current,
+    onMessage: (data) => {
+      try { applyEvent(JSON.parse(data) as RuntimeEvent); } catch { /* ignore malformed external events */ }
+    },
+    onState: setConnection,
+    onExhausted: () => setRetriesExhausted(true),
+  }), [applyEvent]);
 
   useEffect(() => {
     scrollAnchor.current?.scrollIntoView({ behavior: "smooth" });
@@ -177,7 +148,7 @@ export function Dashboard() {
   async function sendMessage(event: FormEvent) {
     event.preventDefault();
     const content = draft.trim();
-    if (!content || sending) return;
+    if (!runtimeReady || !content || sending) return;
     setDraft("");
     setSending(true);
     setNotice("");
@@ -206,6 +177,7 @@ export function Dashboard() {
   }
 
   async function startDemoTask() {
+    if (!runtimeReady) return;
     setNotice("");
     try {
       const response = await fetch(`${apiBase}/api/tasks/demo`, {
@@ -236,6 +208,7 @@ export function Dashboard() {
   }, []);
 
   async function logout() {
+    if (!runtimeReady) return;
     try {
       const response = await fetch(`${apiBase}/auth/logout`, { method: "POST", credentials: "include", headers: { "X-Requested-With": "QuanYejun" } });
       if (!response.ok) throw new Error("logout failed");
@@ -245,7 +218,7 @@ export function Dashboard() {
 
   async function saveAlias(event: FormEvent) {
     event.preventDefault();
-    if (savingAlias) return;
+    if (!runtimeReady || savingAlias) return;
     setSavingAlias(true);
     try {
       const response = await fetch(`${apiBase}/api/session/display-name`, {
@@ -281,12 +254,12 @@ export function Dashboard() {
           <p>현재 호칭: {session?.displayName || "방문자님"}</p>
           <form className="alias-form" onSubmit={saveAlias}>
             <label htmlFor="visitor-alias">대화용 별칭</label>
-            <input id="visitor-alias" value={aliasDraft} onChange={event => setAliasDraft(event.target.value)} placeholder="새 별칭 (최대 40자)" aria-describedby="alias-help" disabled={!session?.id || savingAlias} />
-            <button className="task-launch" type="submit" disabled={!session?.id || savingAlias}>{savingAlias ? "저장 중" : aliasDraft.trim() ? "별칭 저장" : "기본 호칭으로 초기화"}</button>
+            <input id="visitor-alias" value={aliasDraft} onChange={event => setAliasDraft(event.target.value)} placeholder="새 별칭 (최대 40자)" aria-describedby="alias-help" disabled={!runtimeReady || savingAlias} />
+            <button className="task-launch" type="submit" disabled={!runtimeReady || savingAlias}>{savingAlias ? "저장 중" : aliasDraft.trim() ? "별칭 저장" : "기본 호칭으로 초기화"}</button>
             <p id="alias-help">빈 값은 방문자님으로 초기화됩니다. 별칭은 로그인 상태나 권한을 바꾸지 않습니다.</p>
           </form>
-          <p>{session?.role === "authenticated" ? "로그인됨 · 대화가 계속 이어집니다" : "익명 · 각 기록은 생성 후 72시간까지만 보관됩니다"}</p>
-          {session?.role === "authenticated" ? <button className="task-launch" type="button" onClick={logout}>로그아웃</button> : session?.loginEnabled ? <a className="task-launch" href={`${apiBase}/auth/login`}>SSO 로그인</a> : <span>로그인 준비 중</span>}
+          <p>{!session ? "미리보기 · 대화는 저장되지 않습니다" : session.role === "authenticated" ? "로그인됨 · 대화가 계속 이어집니다" : "익명 · 각 기록은 생성 후 72시간까지만 보관됩니다"}</p>
+          {session?.role === "authenticated" ? <button className="task-launch" type="button" onClick={logout} disabled={!runtimeReady}>로그아웃</button> : session?.loginEnabled ? <a className="task-launch" href={`${apiBase}/auth/login`}>SSO 로그인</a> : <span>로그인 준비 중</span>}
           {session?.role !== "authenticated" && session?.loginEnabled && <p>로그인하면 회원 대화로 전환됩니다. 익명 기록은 이전되지 않습니다.</p>}
         </div>
         <nav className="primary-nav" aria-label="주요 메뉴">
@@ -311,9 +284,14 @@ export function Dashboard() {
       <section className="conversation" id="conversation">
         <header className="conversation-header">
           <div><p className="eyebrow">하나의 이어지는 대화</p><h2>{session?.displayName || "방문자님"}과 {identityName}</h2></div>
-          <button className="task-launch" type="button" onClick={startDemoTask}>비동기 작업 실행</button>
+          <button className="task-launch" type="button" onClick={startDemoTask} disabled={!runtimeReady}>비동기 작업 실행</button>
         </header>
         <div className="conversation-body" aria-live="polite">
+          {!runtimeReady && <p className="preview-notice" role="status">{!apiBase
+            ? "미리보기입니다. 대화 전송과 작업 실행은 서비스 연결 후 사용할 수 있습니다."
+            : retriesExhausted
+              ? "연결 재시도 10회를 마쳐 자동 연결을 중단했습니다. 다시 연결하려면 페이지를 새로고침해주세요."
+              : "서비스에 연결 중입니다. 연결이 완료되면 대화와 작업을 사용할 수 있습니다."}</p>}
           <div className="date-divider"><span>오늘</span></div>
           {messages.map((message) => (
             <article className={`message ${message.role === "user" ? "user-message" : "entity-message"}`} key={message.id}>
@@ -342,14 +320,14 @@ export function Dashboard() {
           {notice && <p className="runtime-notice" role="alert">{notice}</p>}
           <form className="composer" onSubmit={sendMessage}>
             <label className="sr-only" htmlFor="message">메시지</label>
-            <textarea id="message" name="message" value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={handleComposerKey} placeholder={`${identityName}에게 메시지 보내기`} rows={1} />
+            <textarea id="message" name="message" value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={handleComposerKey} placeholder={runtimeReady ? `${identityName}에게 메시지 보내기` : "서비스 연결 후 메시지를 보낼 수 있습니다"} disabled={!runtimeReady} rows={1} />
             <div className="composer-actions">
-              <span className={`connection-chip ${connection}`}>{connection === "online" ? "실시간 연결" : "로컬 미리보기"}</span>
+              <span className={`connection-chip ${connection}`}>{connection === "online" ? "실시간 연결" : !apiBase ? "미리보기" : "연결 대기"}</span>
               <span>Enter 전송 · Shift + Enter 줄바꿈</span>
-              <button className="send-button" type="submit" aria-label="메시지 전송" disabled={!draft.trim() || sending}>↑</button>
+              <button className="send-button" type="submit" aria-label="메시지 전송" disabled={!runtimeReady || !draft.trim() || sending}>↑</button>
             </div>
           </form>
-          <p className="continuity-note">대화가 닫혀도 기억과 작업은 계속됩니다.</p>
+          <p className="continuity-note">{runtimeReady ? "대화가 닫혀도 기억과 작업은 계속됩니다." : "현재 대화 전송과 작업 실행을 사용할 수 없습니다."}</p>
         </footer>
       </section>
 

@@ -61,7 +61,7 @@ services:
       context: .
       dockerfile: Dockerfile.frontend
       args:
-        NEXT_PUBLIC_RUNTIME_URL: ${NEXT_PUBLIC_RUNTIME_URL:-http://localhost:8080}
+        NEXT_PUBLIC_RUNTIME_URL: ${NEXT_PUBLIC_RUNTIME_URL:-}
     environment:
       HOST: 0.0.0.0
       PORT: 3000
