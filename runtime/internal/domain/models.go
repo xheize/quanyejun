@@ -74,25 +74,26 @@ type Event struct {
 }
 
 type AgentRun struct {
-	ExpiresAt      *time.Time `json:"expiresAt,omitempty"`
-	ID             string     `json:"id"`
-	IdentityID     string     `json:"identityId"`
-	ActorID        string     `json:"actorId"`
-	ConversationID string     `json:"conversationId"`
-	ParentRunID    string     `json:"parentRunId,omitempty"`
-	InputMessageID string     `json:"inputMessageId,omitempty"`
-	Kind           string     `json:"kind"`
-	Provider       string     `json:"provider"`
-	Model          string     `json:"model,omitempty"`
-	Status         string     `json:"status"`
-	Goal           string     `json:"goal"`
-	Result         string     `json:"result,omitempty"`
-	Error          string     `json:"error,omitempty"`
-	Attempt        int        `json:"attempt"`
-	CreatedAt      time.Time  `json:"createdAt"`
-	UpdatedAt      time.Time  `json:"updatedAt"`
-	StartedAt      time.Time  `json:"startedAt,omitempty"`
-	CompletedAt    time.Time  `json:"completedAt,omitempty"`
+	Visitor        VisitorContext `json:"visitor"`
+	ExpiresAt      *time.Time     `json:"expiresAt,omitempty"`
+	ID             string         `json:"id"`
+	IdentityID     string         `json:"identityId"`
+	ActorID        string         `json:"actorId"`
+	ConversationID string         `json:"conversationId"`
+	ParentRunID    string         `json:"parentRunId,omitempty"`
+	InputMessageID string         `json:"inputMessageId,omitempty"`
+	Kind           string         `json:"kind"`
+	Provider       string         `json:"provider"`
+	Model          string         `json:"model,omitempty"`
+	Status         string         `json:"status"`
+	Goal           string         `json:"goal"`
+	Result         string         `json:"result,omitempty"`
+	Error          string         `json:"error,omitempty"`
+	Attempt        int            `json:"attempt"`
+	CreatedAt      time.Time      `json:"createdAt"`
+	UpdatedAt      time.Time      `json:"updatedAt"`
+	StartedAt      time.Time      `json:"startedAt,omitempty"`
+	CompletedAt    time.Time      `json:"completedAt,omitempty"`
 }
 
 type RunStep struct {

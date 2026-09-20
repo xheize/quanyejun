@@ -12,6 +12,8 @@ import (
 )
 
 type Store interface {
+	GetVisitorProfile(context.Context, string) (domain.VisitorProfile, error)
+	SetVisitorProfile(context.Context, string, string) (domain.VisitorProfile, error)
 	EnsureIdentity(context.Context) (domain.Identity, error)
 	AddMessage(context.Context, domain.Message) error
 	ListMessages(context.Context, string, int) ([]domain.Message, error)
@@ -34,6 +36,7 @@ type Store interface {
 }
 
 type MemoryStore struct {
+	profiles map[string]domain.VisitorProfile
 	mu       sync.RWMutex
 	identity domain.Identity
 	messages []domain.Message
@@ -275,6 +278,11 @@ func (s *MemoryStore) ListEventsAfter(_ context.Context, actorID, after string, 
 func (s *MemoryStore) PurgeExpired(context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	for actor, profile := range s.profiles {
+		if domain.Expired(profile.ExpiresAt) {
+			delete(s.profiles, actor)
+		}
+	}
 	s.messages = slices.DeleteFunc(s.messages, func(v domain.Message) bool { return domain.Expired(v.ExpiresAt) })
 	s.memories = slices.DeleteFunc(s.memories, func(v domain.Memory) bool { return domain.Expired(v.ExpiresAt) })
 	s.tasks = slices.DeleteFunc(s.tasks, func(v domain.Task) bool { return domain.Expired(v.ExpiresAt) })

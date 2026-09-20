@@ -31,6 +31,9 @@ func NewPostgresStore(ctx context.Context, databaseURL string) (*PostgresStore, 
 
 func (s *PostgresStore) ensureSchema(ctx context.Context) error {
 	statements := []string{
+		`CREATE TABLE IF NOT EXISTS visitor_profiles (actor_id TEXT PRIMARY KEY, display_name TEXT NOT NULL, expires_at TIMESTAMPTZ)`,
+		`CREATE INDEX IF NOT EXISTS visitor_profiles_expires_idx ON visitor_profiles (expires_at) WHERE expires_at IS NOT NULL`,
+
 		`CREATE TABLE IF NOT EXISTS identities (id TEXT PRIMARY KEY, name TEXT NOT NULL, status TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS messages (id TEXT PRIMARY KEY, actor_id TEXT NOT NULL, conversation_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL)`,
 		`CREATE INDEX IF NOT EXISTS messages_actor_created_idx ON messages (actor_id, created_at DESC)`,
@@ -39,6 +42,7 @@ func (s *PostgresStore) ensureSchema(ctx context.Context) error {
 		`CREATE TABLE IF NOT EXISTS tasks (id TEXT PRIMARY KEY, actor_id TEXT NOT NULL, title TEXT NOT NULL, type TEXT NOT NULL, status TEXT NOT NULL, progress INTEGER NOT NULL, result TEXT NOT NULL DEFAULT '', created_at TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL)`,
 		`CREATE INDEX IF NOT EXISTS tasks_actor_updated_idx ON tasks (actor_id, updated_at DESC)`,
 		`CREATE TABLE IF NOT EXISTS agent_runs (id TEXT PRIMARY KEY, identity_id TEXT NOT NULL, actor_id TEXT NOT NULL, conversation_id TEXT NOT NULL, parent_run_id TEXT NOT NULL DEFAULT '', input_message_id TEXT NOT NULL DEFAULT '', kind TEXT NOT NULL, provider TEXT NOT NULL, model TEXT NOT NULL DEFAULT '', status TEXT NOT NULL, goal TEXT NOT NULL, result TEXT NOT NULL DEFAULT '', error TEXT NOT NULL DEFAULT '', attempt INTEGER NOT NULL DEFAULT 0, created_at TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL, started_at TIMESTAMPTZ NOT NULL, completed_at TIMESTAMPTZ NOT NULL)`,
+		`ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS visitor JSONB NOT NULL DEFAULT '{}'`,
 		`CREATE INDEX IF NOT EXISTS agent_runs_actor_updated_idx ON agent_runs (actor_id, updated_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS agent_runs_status_created_idx ON agent_runs (status, created_at)`,
 		`CREATE TABLE IF NOT EXISTS run_steps (id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE, sequence INTEGER NOT NULL, kind TEXT NOT NULL, status TEXT NOT NULL, provider_response_id TEXT NOT NULL DEFAULT '', call_id TEXT NOT NULL DEFAULT '', tool_name TEXT NOT NULL DEFAULT '', input JSONB NOT NULL DEFAULT 'null', output JSONB NOT NULL DEFAULT 'null', error TEXT NOT NULL DEFAULT '', created_at TIMESTAMPTZ NOT NULL, completed_at TIMESTAMPTZ NOT NULL, UNIQUE(run_id, sequence))`,
@@ -167,7 +171,7 @@ func (s *PostgresStore) CreateAgentRun(ctx context.Context, run domain.AgentRun)
 	if domain.Expired(run.ExpiresAt) {
 		return nil
 	}
-	_, err := s.pool.Exec(ctx, `INSERT INTO agent_runs (id,identity_id,actor_id,conversation_id,parent_run_id,input_message_id,kind,provider,model,status,goal,result,error,attempt,created_at,updated_at,started_at,completed_at,expires_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)`, run.ID, run.IdentityID, run.ActorID, run.ConversationID, run.ParentRunID, run.InputMessageID, run.Kind, run.Provider, run.Model, run.Status, run.Goal, run.Result, run.Error, run.Attempt, run.CreatedAt, run.UpdatedAt, run.StartedAt, run.CompletedAt, run.ExpiresAt)
+	_, err := s.pool.Exec(ctx, `INSERT INTO agent_runs (id,identity_id,actor_id,conversation_id,parent_run_id,input_message_id,kind,provider,model,status,goal,result,error,attempt,created_at,updated_at,started_at,completed_at,expires_at,visitor) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)`, run.ID, run.IdentityID, run.ActorID, run.ConversationID, run.ParentRunID, run.InputMessageID, run.Kind, run.Provider, run.Model, run.Status, run.Goal, run.Result, run.Error, run.Attempt, run.CreatedAt, run.UpdatedAt, run.StartedAt, run.CompletedAt, run.ExpiresAt, run.Visitor)
 	return err
 }
 func (s *PostgresStore) UpdateAgentRun(ctx context.Context, run domain.AgentRun) error {
@@ -180,11 +184,11 @@ func (s *PostgresStore) UpdateAgentRun(ctx context.Context, run domain.AgentRun)
 }
 func (s *PostgresStore) GetAgentRun(ctx context.Context, id string) (domain.AgentRun, error) {
 	var run domain.AgentRun
-	err := s.pool.QueryRow(ctx, `SELECT id,identity_id,actor_id,conversation_id,parent_run_id,input_message_id,kind,provider,model,status,goal,result,error,attempt,created_at,updated_at,started_at,completed_at,expires_at FROM agent_runs WHERE id=$1 AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)`, id).Scan(&run.ID, &run.IdentityID, &run.ActorID, &run.ConversationID, &run.ParentRunID, &run.InputMessageID, &run.Kind, &run.Provider, &run.Model, &run.Status, &run.Goal, &run.Result, &run.Error, &run.Attempt, &run.CreatedAt, &run.UpdatedAt, &run.StartedAt, &run.CompletedAt, &run.ExpiresAt)
+	err := s.pool.QueryRow(ctx, `SELECT id,identity_id,actor_id,conversation_id,parent_run_id,input_message_id,kind,provider,model,status,goal,result,error,attempt,created_at,updated_at,started_at,completed_at,expires_at,visitor FROM agent_runs WHERE id=$1 AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)`, id).Scan(&run.ID, &run.IdentityID, &run.ActorID, &run.ConversationID, &run.ParentRunID, &run.InputMessageID, &run.Kind, &run.Provider, &run.Model, &run.Status, &run.Goal, &run.Result, &run.Error, &run.Attempt, &run.CreatedAt, &run.UpdatedAt, &run.StartedAt, &run.CompletedAt, &run.ExpiresAt, &run.Visitor)
 	return run, err
 }
 func (s *PostgresStore) ListAgentRuns(ctx context.Context, actorID string, limit int) ([]domain.AgentRun, error) {
-	rows, err := s.pool.Query(ctx, `SELECT id,identity_id,actor_id,conversation_id,parent_run_id,input_message_id,kind,provider,model,status,goal,result,error,attempt,created_at,updated_at,started_at,completed_at,expires_at FROM (SELECT * FROM agent_runs WHERE actor_id=$1 AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP) ORDER BY updated_at DESC LIMIT $2) recent ORDER BY updated_at`, actorID, limit)
+	rows, err := s.pool.Query(ctx, `SELECT id,identity_id,actor_id,conversation_id,parent_run_id,input_message_id,kind,provider,model,status,goal,result,error,attempt,created_at,updated_at,started_at,completed_at,expires_at,visitor FROM (SELECT * FROM agent_runs WHERE actor_id=$1 AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP) ORDER BY updated_at DESC LIMIT $2) recent ORDER BY updated_at`, actorID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -192,7 +196,7 @@ func (s *PostgresStore) ListAgentRuns(ctx context.Context, actorID string, limit
 	return scanAgentRuns(rows, limit)
 }
 func (s *PostgresStore) ListAgentRunsByStatus(ctx context.Context, statuses []string, limit int) ([]domain.AgentRun, error) {
-	rows, err := s.pool.Query(ctx, `SELECT id,identity_id,actor_id,conversation_id,parent_run_id,input_message_id,kind,provider,model,status,goal,result,error,attempt,created_at,updated_at,started_at,completed_at,expires_at FROM agent_runs WHERE status = ANY($1) AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP) ORDER BY created_at LIMIT $2`, statuses, limit)
+	rows, err := s.pool.Query(ctx, `SELECT id,identity_id,actor_id,conversation_id,parent_run_id,input_message_id,kind,provider,model,status,goal,result,error,attempt,created_at,updated_at,started_at,completed_at,expires_at,visitor FROM agent_runs WHERE status = ANY($1) AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP) ORDER BY created_at LIMIT $2`, statuses, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -283,7 +287,7 @@ func scanAgentRuns(rows agentRunRows, capacity int) ([]domain.AgentRun, error) {
 	items := make([]domain.AgentRun, 0, capacity)
 	for rows.Next() {
 		var run domain.AgentRun
-		if err := rows.Scan(&run.ID, &run.IdentityID, &run.ActorID, &run.ConversationID, &run.ParentRunID, &run.InputMessageID, &run.Kind, &run.Provider, &run.Model, &run.Status, &run.Goal, &run.Result, &run.Error, &run.Attempt, &run.CreatedAt, &run.UpdatedAt, &run.StartedAt, &run.CompletedAt, &run.ExpiresAt); err != nil {
+		if err := rows.Scan(&run.ID, &run.IdentityID, &run.ActorID, &run.ConversationID, &run.ParentRunID, &run.InputMessageID, &run.Kind, &run.Provider, &run.Model, &run.Status, &run.Goal, &run.Result, &run.Error, &run.Attempt, &run.CreatedAt, &run.UpdatedAt, &run.StartedAt, &run.CompletedAt, &run.ExpiresAt, &run.Visitor); err != nil {
 			return nil, err
 		}
 		items = append(items, run)
@@ -304,7 +308,7 @@ func (s *PostgresStore) PurgeExpired(ctx context.Context) error {
 		return err
 	}
 	defer tx.Rollback(ctx)
-	for _, table := range []string{"events", "run_steps", "agent_runs", "tasks", "memories", "messages"} {
+	for _, table := range []string{"visitor_profiles", "events", "run_steps", "agent_runs", "tasks", "memories", "messages"} {
 		if _, err := tx.Exec(ctx, "DELETE FROM "+table+" WHERE expires_at <= CURRENT_TIMESTAMP"); err != nil {
 			return err
 		}
