@@ -17,7 +17,7 @@ type EnvironmentInfo = {
   authority: { mode: string; granted: string[] };
   tools: { name: string; path?: string; available: boolean }[];
 };
-type VisitorSession = { id: string; role: "anonymous" | "authenticated"; loginEnabled: boolean };
+type VisitorSession = { id: string; role: "anonymous" | "authenticated"; loginEnabled: boolean; displayName: string; displayNameExpiresAt?: string };
 type Bootstrap = {
   session: VisitorSession;
   identity: { id: string; name: string; status: string };
@@ -75,6 +75,8 @@ function relativeTime(value: string) {
 
 export function Dashboard() {
   const [session, setSession] = useState<VisitorSession | null>(null);
+  const [aliasDraft, setAliasDraft] = useState("");
+  const [savingAlias, setSavingAlias] = useState(false);
   const [identityName, setIdentityName] = useState("QuanYejun");
   const [messages, setMessages] = useState<Message[]>(seedMessages);
   const [tasks, setTasks] = useState<RuntimeTask[]>([]);
@@ -117,7 +119,7 @@ export function Dashboard() {
         if (response.status === 401) {
           setMessages([]); setMemories([]); setTasks([]); setEvents([]);
           lastEventId.current = "";
-          setSession({ id: "", role: "anonymous", loginEnabled: true });
+          setSession({ id: "", role: "anonymous", loginEnabled: true, displayName: "방문자님" });
           setNotice("로그인 세션을 확인할 수 없습니다. 다시 로그인해주세요.");
         }
         if (!response.ok) throw new Error("runtime unavailable");
@@ -227,6 +229,8 @@ export function Dashboard() {
       setMemories(items => items.filter(live));
       setTasks(items => items.filter(live));
       setEvents(items => items.filter(live));
+      setSession(current => current?.displayNameExpiresAt && Date.parse(current.displayNameExpiresAt) <= Date.now()
+        ? { ...current, displayName: "방문자님", displayNameExpiresAt: undefined } : current);
     }, 1000);
     return () => clearInterval(timer);
   }, []);
@@ -237,6 +241,25 @@ export function Dashboard() {
       if (!response.ok) throw new Error("logout failed");
       window.location.reload();
     } catch { setNotice("로그아웃하지 못했습니다. 다시 시도해주세요."); }
+  }
+
+  async function saveAlias(event: FormEvent) {
+    event.preventDefault();
+    if (savingAlias) return;
+    setSavingAlias(true);
+    try {
+      const response = await fetch(`${apiBase}/api/session/display-name`, {
+        method: "POST", credentials: "include",
+        headers: { "Content-Type": "application/json", "X-Requested-With": "QuanYejun" },
+        body: JSON.stringify({ displayName: aliasDraft }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "별칭을 저장하지 못했습니다.");
+      setSession(data as VisitorSession);
+      setAliasDraft("");
+      setNotice("별칭을 저장했습니다.");
+    } catch (error) { setNotice(error instanceof Error ? error.message : "별칭을 저장하지 못했습니다."); }
+    finally { setSavingAlias(false); }
   }
 
   const activeTask = [...tasks].reverse().find((task) => task.status === "running" || task.status === "queued");
@@ -255,6 +278,13 @@ export function Dashboard() {
           <p className="identity-state"><span className={`status-dot ${connection}`} /> {connection === "online" ? "깨어 있음" : connection === "connecting" ? "연결 중" : "런타임 대기"}</p>
         </div>
         <div className="session-controls">
+          <p>현재 호칭: {session?.displayName || "방문자님"}</p>
+          <form className="alias-form" onSubmit={saveAlias}>
+            <label htmlFor="visitor-alias">대화용 별칭</label>
+            <input id="visitor-alias" value={aliasDraft} onChange={event => setAliasDraft(event.target.value)} placeholder="새 별칭 (최대 40자)" aria-describedby="alias-help" disabled={!session?.id || savingAlias} />
+            <button className="task-launch" type="submit" disabled={!session?.id || savingAlias}>{savingAlias ? "저장 중" : aliasDraft.trim() ? "별칭 저장" : "기본 호칭으로 초기화"}</button>
+            <p id="alias-help">빈 값은 방문자님으로 초기화됩니다. 별칭은 로그인 상태나 권한을 바꾸지 않습니다.</p>
+          </form>
           <p>{session?.role === "authenticated" ? "로그인됨 · 대화가 계속 이어집니다" : "익명 · 각 기록은 생성 후 72시간까지만 보관됩니다"}</p>
           {session?.role === "authenticated" ? <button className="task-launch" type="button" onClick={logout}>로그아웃</button> : session?.loginEnabled ? <a className="task-launch" href={`${apiBase}/auth/login`}>SSO 로그인</a> : <span>로그인 준비 중</span>}
           {session?.role !== "authenticated" && session?.loginEnabled && <p>로그인하면 회원 대화로 전환됩니다. 익명 기록은 이전되지 않습니다.</p>}
@@ -280,7 +310,7 @@ export function Dashboard() {
 
       <section className="conversation" id="conversation">
         <header className="conversation-header">
-          <div><p className="eyebrow">하나의 이어지는 대화</p><h2>{session?.role === "authenticated" ? "회원님" : "방문자님"}과 {identityName}</h2></div>
+          <div><p className="eyebrow">하나의 이어지는 대화</p><h2>{session?.displayName || "방문자님"}과 {identityName}</h2></div>
           <button className="task-launch" type="button" onClick={startDemoTask}>비동기 작업 실행</button>
         </header>
         <div className="conversation-body" aria-live="polite">

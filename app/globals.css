@@ -170,3 +170,16 @@ a { color: inherit; text-decoration: none; }
 .session-controls { margin: 1rem 0; font-size: 0.875rem; line-height: 1.5; }
 .session-controls p { margin: 0 0 0.75rem; }
 .session-controls a { display: inline-block; text-decoration: none; }
+.alias-form { display: grid; gap: 8px; margin: 14px 0; }
+.alias-form input { width: 100%; min-width: 0; box-sizing: border-box; padding: 9px 10px; border: 1px solid #cbd5cf; border-radius: 8px; background: transparent; color: inherit; font: inherit; }
+.alias-form input:focus-visible { outline: 2px solid #46735c; outline-offset: 2px; }
+.alias-form button:disabled { opacity: .55; cursor: default; }
+.session-controls, .conversation-header h2 { overflow-wrap: anywhere; }
+@media (max-width: 720px) {
+  .identity-panel { height: auto; flex-wrap: wrap; position: static; }
+  .brand-mark { flex-shrink: 0; }
+  .session-controls { order: 3; flex-basis: 100%; min-width: 0; margin-bottom: 0; }
+  .conversation-header { height: auto; min-height: 74px; gap: 12px; }
+  .conversation-header > div { min-width: 0; }
+  .conversation-header > button { flex-shrink: 0; }
+}
