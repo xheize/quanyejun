@@ -230,7 +230,11 @@ func TestWebSocketScopesReplayAndLiveEvents(t *testing.T) {
 	past := now.Add(-time.Second)
 	hub.Publish(domain.Event{ID: "expired", ActorID: p.ActorID, Timestamp: now, ExpiresAt: &past})
 	hub.Publish(domain.Event{ID: "foreign-live", ActorID: "anon:other", Timestamp: now})
-	hub.Publish(domain.Event{ID: "own-live", ActorID: p.ActorID, Timestamp: now})
+	live := domain.Event{ID: "own-live", ActorID: p.ActorID, Timestamp: now}
+	if err := db.AppendEvent(context.Background(), live); err != nil {
+		t.Fatal(err)
+	}
+	hub.Publish(live)
 	if err = ws.ReadJSON(&event); err != nil || event.ID != "own-live" {
 		t.Fatal("live isolation failed", event, err)
 	}

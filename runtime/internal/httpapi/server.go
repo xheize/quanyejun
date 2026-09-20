@@ -3,8 +3,10 @@ package httpapi
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"log/slog"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -21,6 +23,7 @@ import (
 )
 
 type Server struct {
+	budget         requestBudget
 	auth           *Auth
 	store          store.Store
 	hub            *eventhub.Hub
@@ -50,7 +53,16 @@ func New(store store.Store, hub *eventhub.Hub, provider llm.Provider, agentRunne
 
 func (s *Server) Handler() http.Handler {
 	router := gin.New()
-	router.Use(gin.Recovery(), s.cors())
+	var proxies []string
+	if raw := strings.TrimSpace(os.Getenv("TRUSTED_PROXIES")); raw != "" {
+		for _, proxy := range strings.Split(raw, ",") {
+			proxies = append(proxies, strings.TrimSpace(proxy))
+		}
+	}
+	if err := router.SetTrustedProxies(proxies); err != nil {
+		panic("invalid TRUSTED_PROXIES")
+	}
+	router.Use(gin.Recovery(), s.cors(), s.limitIP)
 	// Do not log callback codes, cookies, or anonymous request contents.
 	router.Use(func(c *gin.Context) {
 		c.Header("Cache-Control", "no-store")
@@ -61,7 +73,7 @@ func (s *Server) Handler() http.Handler {
 	router.GET("/auth/callback", s.auth.callback)
 	router.POST("/auth/logout", s.auth.logout)
 	router.GET("/healthz", s.health)
-	router.Use(s.auth.identify, s.visitorProfile)
+	router.Use(s.auth.identify, s.limitActor, s.visitorProfile)
 	router.GET("/api/session", func(c *gin.Context) { c.JSON(200, principal(c)) })
 	router.POST("/api/session/display-name", s.setDisplayName)
 	router.GET("/api/bootstrap", s.bootstrap)
@@ -177,8 +189,7 @@ type messageInput struct {
 
 func (s *Server) createMessage(c *gin.Context) {
 	var input messageInput
-	if err := c.ShouldBindJSON(&input); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid JSON body"})
+	if !decodeRequest(c, &input) {
 		return
 	}
 	input.ActorID = actor(c)
@@ -189,16 +200,12 @@ func (s *Server) createMessage(c *gin.Context) {
 	}
 	now := time.Now().UTC()
 	userMessage := domain.Message{ID: uuid.NewString(), ActorID: input.ActorID, ConversationID: domain.ConversationID, Role: "user", Content: input.Content, CreatedAt: now, ExpiresAt: domain.Expiry(c.Request.Context(), input.ActorID, now, nil)}
-	if err := s.store.AddMessage(c.Request.Context(), userMessage); err != nil {
-		fail(c, err)
-		return
-	}
-	if err := s.emit(c.Request.Context(), "chat.message", "http", input.ActorID, map[string]any{"message": userMessage}); err != nil {
-		fail(c, err)
-		return
-	}
-	run, err := s.agentRunner.StartForVisitor(input.ActorID, userMessage.ID, input.Content, domain.VisitorContext{Role: principal(c).Role, DisplayName: principal(c).DisplayName}, principal(c).DisplayNameExpiresAt)
+	run, err := s.agentRunner.StartMessage(c.Request.Context(), userMessage, domain.VisitorContext{Role: principal(c).Role, DisplayName: principal(c).DisplayName}, principal(c).DisplayNameExpiresAt)
 	if err != nil {
+		if errors.Is(err, agent.ErrCapacity) {
+			tooManyRequests(c)
+			return
+		}
 		slog.Error("agent run creation failed", "provider", s.provider.Name(), "error", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "agent run creation failed"})
 		return
@@ -227,7 +234,9 @@ type taskInput struct {
 
 func (s *Server) createDemoTask(c *gin.Context) {
 	var input taskInput
-	_ = c.ShouldBindJSON(&input)
+	if !decodeRequest(c, &input) {
+		return
+	}
 	input.ActorID = actor(c)
 	if input.DurationSeconds <= 0 {
 		input.DurationSeconds = 12
@@ -237,6 +246,10 @@ func (s *Server) createDemoTask(c *gin.Context) {
 	}
 	task, err := s.taskRunner.StartDemo(input.ActorID, time.Duration(input.DurationSeconds)*time.Second)
 	if err != nil {
+		if errors.Is(err, tasks.ErrCapacity) {
+			tooManyRequests(c)
+			return
+		}
 		fail(c, err)
 		return
 	}
@@ -272,21 +285,52 @@ func (s *Server) websocket(c *gin.Context) {
 	}()
 	events, unsubscribe := s.hub.Subscribe()
 	defer unsubscribe()
-	replay, err := s.store.ListEventsAfter(c.Request.Context(), actor(c), c.Query("lastEventId"), 100)
-	if err != nil {
-		return
+	sessionExpiry := time.Unix(c.GetInt64("sessionExpires"), 0)
+	cursor := c.Query("lastEventId")
+	if cursor == "" {
+		cursor = store.EventStreamStart
 	}
-	for _, event := range replay {
-		if event.ActorID != actor(c) || domain.Expired(event.ExpiresAt) {
-			continue
+	// The hub is only a wake-up signal. Reading the persisted cursor stream
+	// avoids replay/live duplicates and fills gaps when the hub buffer overflows.
+	drain := func() error {
+		for {
+			if !sessionExpiry.After(time.Now()) {
+				return errors.New("session expired")
+			}
+			select {
+			case <-done:
+				return errors.New("socket closed")
+			default:
+			}
+			page, err := s.store.ListEventsAfter(c.Request.Context(), actor(c), cursor, 100)
+			if err != nil {
+				return err
+			}
+			for _, event := range page {
+				if event.ActorID != actor(c) {
+					continue
+				}
+				cursor = event.ID
+				if domain.Expired(event.ExpiresAt) {
+					continue
+				}
+				if err := connection.SetWriteDeadline(time.Now().Add(5 * time.Second)); err != nil {
+					return err
+				}
+				if err := connection.WriteJSON(event); err != nil {
+					return err
+				}
+			}
+			if len(page) < 100 {
+				return nil
+			}
 		}
-		if err := connection.WriteJSON(event); err != nil {
-			return
-		}
+	}
+	if err := drain(); err != nil {
+		return
 	}
 	ticker := time.NewTicker(25 * time.Second)
 	defer ticker.Stop()
-	sessionExpiry := time.Unix(c.GetInt64("sessionExpires"), 0)
 	expiryTimer := time.NewTimer(time.Until(sessionExpiry))
 	defer expiryTimer.Stop()
 	for {
@@ -301,7 +345,7 @@ func (s *Server) websocket(c *gin.Context) {
 			if event.ActorID != actor(c) || domain.Expired(event.ExpiresAt) {
 				continue
 			}
-			if err := connection.WriteJSON(event); err != nil {
+			if err := drain(); err != nil {
 				return
 			}
 		case <-ticker.C:
@@ -313,6 +357,9 @@ func (s *Server) websocket(c *gin.Context) {
 				if _, err := s.auth.userInfo(c, session.AccessToken); err != nil {
 					return
 				}
+			}
+			if err := drain(); err != nil {
+				return
 			}
 			if err := connection.WriteControl(websocket.PingMessage, []byte("ping"), time.Now().Add(5*time.Second)); err != nil {
 				return

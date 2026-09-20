@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -17,6 +18,7 @@ import (
 )
 
 type Runner struct {
+	slots       chan struct{}
 	store       store.Store
 	hub         *eventhub.Hub
 	provider    llm.Provider
@@ -31,7 +33,26 @@ func NewRunner(dataStore store.Store, hub *eventhub.Hub, provider llm.Provider, 
 }
 
 func NewRunnerWithConfig(dataStore store.Store, hub *eventhub.Hub, provider llm.Provider, tools *runtimetools.Registry, displayName string, config HarnessConfig) *Runner {
-	return &Runner{store: dataStore, hub: hub, provider: provider, tools: tools, displayName: domain.NormalizeDisplayName(displayName), config: normalizeHarnessConfig(config)}
+	config = normalizeHarnessConfig(config)
+	return &Runner{slots: make(chan struct{}, config.MaxConcurrent), store: dataStore, hub: hub, provider: provider, tools: tools, displayName: domain.NormalizeDisplayName(displayName), config: config}
+}
+
+var ErrCapacity = errors.New("agent concurrency limit reached")
+
+// Admit before persisting input, so rejected requests leave no orphan messages.
+func (r *Runner) StartMessage(ctx context.Context, message domain.Message, visitor domain.VisitorContext, aliasExpiry *time.Time) (domain.AgentRun, error) {
+	return r.startForVisitor(message.ActorID, message.ID, message.Content, visitor, aliasExpiry, func() error {
+		if err := r.store.AddMessage(ctx, message); err != nil {
+			return err
+		}
+		event := domain.Event{ID: uuid.NewString(), Type: "chat.message", Source: "http", ActorID: message.ActorID, ConversationID: message.ConversationID, Timestamp: message.CreatedAt, Payload: map[string]any{"message": message}}
+		event.ExpiresAt = domain.EventExpiry(ctx, event)
+		if err := r.store.AppendEvent(ctx, event); err != nil {
+			return err
+		}
+		r.hub.Publish(event)
+		return nil
+	})
 }
 
 func (r *Runner) Start(actorID, messageID, goal string) (domain.AgentRun, error) {
@@ -39,6 +60,26 @@ func (r *Runner) Start(actorID, messageID, goal string) (domain.AgentRun, error)
 }
 
 func (r *Runner) StartForVisitor(actorID, messageID, goal string, visitor domain.VisitorContext, aliasExpiry *time.Time) (domain.AgentRun, error) {
+	return r.startForVisitor(actorID, messageID, goal, visitor, aliasExpiry, nil)
+}
+
+func (r *Runner) startForVisitor(actorID, messageID, goal string, visitor domain.VisitorContext, aliasExpiry *time.Time, persistInput func() error) (domain.AgentRun, error) {
+	select {
+	case r.slots <- struct{}{}:
+	default:
+		return domain.AgentRun{}, ErrCapacity
+	}
+	launched := false
+	defer func() {
+		if !launched {
+			<-r.slots
+		}
+	}()
+	if persistInput != nil {
+		if err := persistInput(); err != nil {
+			return domain.AgentRun{}, err
+		}
+	}
 	now := time.Now().UTC()
 	info := r.provider.Info()
 	run := domain.AgentRun{
@@ -71,7 +112,8 @@ func (r *Runner) StartForVisitor(actorID, messageID, goal string, visitor domain
 	if err := r.emit(context.Background(), run, "run.created", map[string]any{"run": run}); err != nil {
 		return domain.AgentRun{}, err
 	}
-	r.launch(run)
+	r.launch(run, true)
+	launched = true
 	return run, nil
 }
 
@@ -88,17 +130,24 @@ func (r *Runner) Recover(ctx context.Context) error {
 				return err
 			}
 		}
-		r.launch(run)
+		r.launch(run, false)
 	}
 	return nil
 }
 
-func (r *Runner) launch(run domain.AgentRun) {
+func (r *Runner) launch(run domain.AgentRun, reserved bool) {
 	if _, loaded := r.active.LoadOrStore(run.ID, struct{}{}); loaded {
+		if reserved {
+			<-r.slots
+		}
 		return
 	}
 	go func() {
 		defer r.active.Delete(run.ID)
+		if !reserved {
+			r.slots <- struct{}{}
+		}
+		defer func() { <-r.slots }()
 		ctx, cancel := context.WithTimeout(context.Background(), r.config.RunTimeout)
 		defer cancel()
 		ctx = domain.WithExpiry(ctx, run.ExpiresAt)

@@ -11,6 +11,10 @@ import (
 	"github.com/quanyejun/quanyejun/runtime/internal/domain"
 )
 
+// EventStreamStart is a non-UUID cursor before the first persisted event.
+// Empty cursors request the latest page; this cursor requests the full stream.
+const EventStreamStart = "0"
+
 type Store interface {
 	GetVisitorProfile(context.Context, string) (domain.VisitorProfile, error)
 	SetVisitorProfile(context.Context, string, string) (domain.VisitorProfile, error)

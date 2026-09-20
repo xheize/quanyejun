@@ -25,6 +25,8 @@ services:
       PORT: 8080
       DATABASE_URL: postgres://quanyejun:quanyejun@postgres:5432/quanyejun?sslmode=disable
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3000}
+      TRUSTED_PROXIES: ${TRUSTED_PROXIES:-}
+      QUANYEJUN_AGENT_MAX_CONCURRENT: ${QUANYEJUN_AGENT_MAX_CONCURRENT:-4}
       IDENTITY_DISPLAY_NAME: ${IDENTITY_DISPLAY_NAME:-QuanYejun}
       SSO_ISSUER_URL: ${SSO_ISSUER_URL:-}
       SSO_CLIENT_ID: ${SSO_CLIENT_ID:-}

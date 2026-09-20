@@ -2,6 +2,7 @@ package tasks
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -12,13 +13,29 @@ import (
 )
 
 type Runner struct {
+	slots chan struct{}
 	store store.Store
 	hub   *eventhub.Hub
 }
 
-func NewRunner(store store.Store, hub *eventhub.Hub) *Runner { return &Runner{store: store, hub: hub} }
+func NewRunner(store store.Store, hub *eventhub.Hub) *Runner {
+	return &Runner{slots: make(chan struct{}, 32), store: store, hub: hub}
+}
+
+var ErrCapacity = errors.New("task concurrency limit reached")
 
 func (r *Runner) StartDemo(actorID string, duration time.Duration) (domain.Task, error) {
+	select {
+	case r.slots <- struct{}{}:
+	default:
+		return domain.Task{}, ErrCapacity
+	}
+	launched := false
+	defer func() {
+		if !launched {
+			<-r.slots
+		}
+	}()
 	if duration < 4*time.Second {
 		duration = 4 * time.Second
 	}
@@ -30,7 +47,8 @@ func (r *Runner) StartDemo(actorID string, duration time.Duration) (domain.Task,
 	if err := r.emit("task.created", actorID, map[string]any{"task": task}); err != nil {
 		return domain.Task{}, err
 	}
-	go r.execute(task, duration)
+	go func() { defer func() { <-r.slots }(); r.execute(task, duration) }()
+	launched = true
 	return task, nil
 }
 

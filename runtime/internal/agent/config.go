@@ -13,21 +13,24 @@ const (
 )
 
 type HarnessConfig struct {
-	MaxTurns     int
-	MaxToolCalls int
-	RunTimeout   time.Duration
+	MaxConcurrent int
+	MaxTurns      int
+	MaxToolCalls  int
+	RunTimeout    time.Duration
 }
 
 func DefaultHarnessConfig() HarnessConfig {
 	return HarnessConfig{
-		MaxTurns:     defaultMaxTurns,
-		MaxToolCalls: defaultMaxToolCalls,
-		RunTimeout:   defaultRunTimeout,
+		MaxConcurrent: 4,
+		MaxTurns:      defaultMaxTurns,
+		MaxToolCalls:  defaultMaxToolCalls,
+		RunTimeout:    defaultRunTimeout,
 	}
 }
 
 func ConfigFromEnvironment(getenv func(string) string) HarnessConfig {
 	config := DefaultHarnessConfig()
+	config.MaxConcurrent = boundedInt(getenv("QUANYEJUN_AGENT_MAX_CONCURRENT"), config.MaxConcurrent, 1, 64)
 	config.MaxTurns = boundedInt(getenv("QUANYEJUN_AGENT_MAX_TURNS"), config.MaxTurns, 1, 32)
 	config.MaxToolCalls = boundedInt(getenv("QUANYEJUN_AGENT_MAX_TOOL_CALLS"), config.MaxToolCalls, 1, 128)
 	timeoutSeconds := boundedInt(getenv("QUANYEJUN_AGENT_RUN_TIMEOUT_SECONDS"), int(config.RunTimeout/time.Second), 10, 3600)
@@ -37,6 +40,9 @@ func ConfigFromEnvironment(getenv func(string) string) HarnessConfig {
 
 func normalizeHarnessConfig(config HarnessConfig) HarnessConfig {
 	defaults := DefaultHarnessConfig()
+	if config.MaxConcurrent < 1 || config.MaxConcurrent > 64 {
+		config.MaxConcurrent = defaults.MaxConcurrent
+	}
 	if config.MaxTurns < 1 || config.MaxTurns > 32 {
 		config.MaxTurns = defaults.MaxTurns
 	}
