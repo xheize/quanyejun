@@ -61,8 +61,9 @@ func (s *Server) Handler() http.Handler {
 	router.GET("/auth/callback", s.auth.callback)
 	router.POST("/auth/logout", s.auth.logout)
 	router.GET("/healthz", s.health)
-	router.Use(s.auth.identify)
+	router.Use(s.auth.identify, s.visitorProfile)
 	router.GET("/api/session", func(c *gin.Context) { c.JSON(200, principal(c)) })
+	router.POST("/api/session/display-name", s.setDisplayName)
 	router.GET("/api/bootstrap", s.bootstrap)
 	router.GET("/api/environment", s.environmentInfo)
 	router.POST("/api/messages", s.createMessage)
@@ -196,7 +197,7 @@ func (s *Server) createMessage(c *gin.Context) {
 		fail(c, err)
 		return
 	}
-	run, err := s.agentRunner.Start(input.ActorID, userMessage.ID, input.Content)
+	run, err := s.agentRunner.StartForVisitor(input.ActorID, userMessage.ID, input.Content, domain.VisitorContext{Role: principal(c).Role, DisplayName: principal(c).DisplayName}, principal(c).DisplayNameExpiresAt)
 	if err != nil {
 		slog.Error("agent run creation failed", "provider", s.provider.Name(), "error", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "agent run creation failed"})

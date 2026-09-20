@@ -35,10 +35,15 @@ func NewRunnerWithConfig(dataStore store.Store, hub *eventhub.Hub, provider llm.
 }
 
 func (r *Runner) Start(actorID, messageID, goal string) (domain.AgentRun, error) {
+	return r.StartForVisitor(actorID, messageID, goal, domain.VisitorContext{}, nil)
+}
+
+func (r *Runner) StartForVisitor(actorID, messageID, goal string, visitor domain.VisitorContext, aliasExpiry *time.Time) (domain.AgentRun, error) {
 	now := time.Now().UTC()
 	info := r.provider.Info()
 	run := domain.AgentRun{
-		ID: uuid.NewString(), IdentityID: domain.IdentityID, ActorID: actorID, ConversationID: domain.ConversationID,
+		Visitor: visitor.Normalized(),
+		ID:      uuid.NewString(), IdentityID: domain.IdentityID, ActorID: actorID, ConversationID: domain.ConversationID,
 		InputMessageID: messageID, Kind: "parent", Provider: info.ID, Model: info.Model, Status: "queued", Goal: goal,
 		CreatedAt: now, UpdatedAt: now,
 	}
@@ -50,7 +55,7 @@ func (r *Runner) Start(actorID, messageID, goal string) (domain.AgentRun, error)
 	if err != nil {
 		return domain.AgentRun{}, err
 	}
-	run.ExpiresAt = domain.Expiry(context.Background(), actorID, now, nil)
+	run.ExpiresAt = domain.Expiry(context.Background(), actorID, now, aliasExpiry)
 	for _, m := range throughMessage(messages, messageID) {
 		run.ExpiresAt = domain.Earliest(run.ExpiresAt, m.ExpiresAt)
 	}
@@ -164,7 +169,7 @@ func (r *Runner) execute(ctx context.Context, run domain.AgentRun) error {
 			return err
 		}
 
-		result, err := r.provider.Turn(ctx, llm.Request{ActorID: run.ActorID, IdentityName: r.displayName, Messages: messages, Memories: memories, Tools: r.tools.DefinitionsFor(run.ActorID), Exchanges: exchanges})
+		result, err := r.provider.Turn(ctx, llm.Request{Visitor: run.Visitor.Normalized(), ActorID: run.ActorID, IdentityName: r.displayName, Messages: messages, Memories: memories, Tools: r.tools.DefinitionsFor(run.ActorID), Exchanges: exchanges})
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}

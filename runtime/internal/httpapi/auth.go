@@ -83,9 +83,11 @@ func AuthConfigFromEnvironment(keyPath string) (AuthConfig, error) {
 }
 
 type Principal struct {
-	ActorID      string `json:"id"`
-	Role         string `json:"role"`
-	LoginEnabled bool   `json:"loginEnabled"`
+	DisplayName          string     `json:"displayName"`
+	DisplayNameExpiresAt *time.Time `json:"displayNameExpiresAt,omitempty"`
+	ActorID              string     `json:"id"`
+	Role                 string     `json:"role"`
+	LoginEnabled         bool       `json:"loginEnabled"`
 }
 type browserSession struct {
 	ActorID     string `json:"actor"`
