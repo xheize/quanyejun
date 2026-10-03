@@ -59,3 +59,35 @@ yarn-error.log*
 # Administrator-owned runtime configuration (examples remain tracked)
 /config/mcp-servers.json
 /config/mcp-authority.json
+
+# Private keys and local credentials
+*.key
+*.p12
+*.pfx
+*.keystore
+id_rsa
+id_ed25519
+.aws/
+.ssh/
+
+# Local database data and backups; migration SQL stays tracked
+*.dump
+*.dump.*
+*.sql.gz
+*.sql.bz2
+*.sql.xz
+*.sqlite
+*.sqlite3
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite3-wal
+*.sqlite3-shm
+*.bak
+*.backup
+dump.sql
+backup.sql
+*.dump.sql
+*.backup.sql
+/backups/
+/dumps/
+/data/
