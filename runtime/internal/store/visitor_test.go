@@ -15,7 +15,7 @@ func testVisitorProfiles(t *testing.T, s Store) {
 	ctx := context.Background()
 	actor := "anon:" + uuid.NewString()
 	expiry := time.Now().Add(100 * time.Millisecond)
-	p, err := s.SetVisitorProfile(domain.WithExpiry(ctx, &expiry), actor, "소유자")
+	p, err := s.SetVisitorProfile(domain.WithExpiry(ctx, &expiry), actor, "민수")
 	if err != nil || p.ExpiresAt == nil {
 		t.Fatal(p, err)
 	}
@@ -32,12 +32,12 @@ func testVisitorProfiles(t *testing.T, s Store) {
 		t.Fatal(err)
 	}
 	member := "sso:" + uuid.NewString()
-	p, err = s.SetVisitorProfile(ctx, member, "소유자")
+	p, err = s.SetVisitorProfile(ctx, member, "민수")
 	if err != nil || p.ExpiresAt != nil {
 		t.Fatal(p, err)
 	}
 	p, err = s.GetVisitorProfile(ctx, member)
-	if err != nil || p.DisplayName != "소유자" {
+	if err != nil || p.DisplayName != "민수" {
 		t.Fatal(p, err)
 	}
 	_, err = s.SetVisitorProfile(ctx, member, "")
@@ -59,7 +59,7 @@ func TestPostgresVisitorProfiles(t *testing.T) {
 	defer s.Close()
 	testVisitorProfiles(t, s)
 	now := time.Now().UTC()
-	run := domain.AgentRun{ID: uuid.NewString(), ActorID: "sso:test", IdentityID: domain.IdentityID, ConversationID: domain.ConversationID, Kind: "parent", Status: "queued", CreatedAt: now, UpdatedAt: now, Visitor: domain.VisitorContext{Role: "authenticated", DisplayName: "소유자"}}
+	run := domain.AgentRun{ID: uuid.NewString(), ActorID: "sso:test", IdentityID: domain.IdentityID, ConversationID: domain.ConversationID, Kind: "parent", Status: "queued", CreatedAt: now, UpdatedAt: now, Visitor: domain.VisitorContext{Role: "authenticated", DisplayName: "민수"}}
 	if err = s.CreateAgentRun(context.Background(), run); err != nil {
 		t.Fatal(err)
 	}

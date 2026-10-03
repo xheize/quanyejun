@@ -7,13 +7,13 @@ Identity는 하나이고 `ConversationID=global`을 유지한다. 접속마다 �
 - 로그인: 기존 SSO의 Authorization Code + S256 PKCE → access token 교환 → UserInfo의 `sub` 확인. issuer와 sub를 조합한 안정적인 ID로 기록을 연결한다. 이메일 변경은 상대 ID를 바꾸지 않는다.
 - 익명: 서버가 UUID를 발급하고 AES-GCM으로 보호한 HttpOnly 쿠키로 브라우저에 유지한다. 쿠키는 90일 유효하지만 데이터 보존기간을 연장하지 않는다. 다른 브라우저·기기·쿠키 삭제 후에는 다른 익명 상대다.
 - 로그인해도 익명 기록을 회원 또는 글로벌 메모리로 자동 이전하지 않는다. 로그아웃 후에는 새 익명 관계를 시작한다.
-- 기존 `person_example` 기록을 임의의 SSO 사용자에게 자동 귀속시키지 않는다. 기존 기록의 소유자 매핑은 별도 관리 작업이다.
+- 기존 로컬 소유자 기록을 임의의 SSO 사용자에게 자동 귀속시키지 않는다. 기존 기록의 소유자 매핑은 별도 관리 작업이다.
 
 ## SSO 설정
 
-SSO 주소 후보는 `https://sso.example.com`이다. 기존 sso-server 코드의 `/oauth2/auth`, `/oauth2/token`, `/oauth2/userinfo` 계약을 사용한다.
+SSO 주소 예시는 `https://sso.example.com`이다. 연동 서버는 `/oauth2/auth`, `/oauth2/token`, `/oauth2/userinfo` 계약을 제공해야 한다.
 
-2026-09-13 확인 시 위 주소의 discovery 응답은 issuer와 endpoint를 `https://sso-dev.example.com`로 광고했다. 실제 운영에 사용할 issuer를 먼저 확정해야 한다. 서버는 시작 시 discovery의 issuer·endpoint와 설정의 일치를 검사하고, 별칭 주소가 다른 issuer를 가리키면 시작을 거부한다. 이 확인은 client 등록과 실제 로그인 검증을 대체하지 않는다.
+실제 사용할 issuer를 discovery 응답으로 확인해야 한다. 서버는 시작 시 discovery의 issuer·endpoint와 설정의 일치를 검사하고, 별칭 주소가 다른 issuer를 가리키면 시작을 거부한다. 이 확인은 client 등록과 실제 로그인 검증을 대체하지 않는다.
 
 1. SSO 관리자에서 client를 등록한다: `authorization_code`, response `code`, scope `openid`, PKCE `S256`.
 2. `SSO_ISSUER_URL`, `SSO_CLIENT_ID`, confidential client이면 `SSO_CLIENT_SECRET`을 서버에 설정한다.

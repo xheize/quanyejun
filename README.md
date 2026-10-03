@@ -108,9 +108,9 @@ PostgreSQL, Identity workspace, cache, 관리자 설정은 각각 Docker volume�
 
 로그인하지 않아도 서버가 발급한 쿠키로 같은 브라우저의 대화를 이어갑니다. 익명 기록은 **각 생성 시점부터 최대 72시간**만 조회할 수 있으며, 접속을 계속해도 만료가 연장되지 않습니다. 파생 답변·기억·실행 결과는 원본의 가장 이른 만료를 이어받고, 만료 행은 서버 시작 및 30초 간격 정리 작업으로 삭제합니다.
 
-기존 SSO를 연결하려면 `.env`에 discovery가 광고하는 정확한 `SSO_ISSUER_URL`, 등록한 `SSO_CLIENT_ID`와 필요한 경우 `SSO_CLIENT_SECRET`을 설정합니다. 2026-09-13 확인 시 `sso.example.com`는 `sso-dev.example.com`를 issuer로 광고했으므로 먼저 실제 사용할 주소를 확정해야 합니다. SSO 관리자에 `SSO_REDIRECT_URL`의 정확한 URL(기본 `http://localhost:8080/auth/callback`), `authorization_code`, `code`, `openid`, PKCE S256을 등록해야 합니다. 운영에서는 웹·API의 HTTPS 주소에 맞게 `WEB_PUBLIC_URL`, `SSO_REDIRECT_URL`, `ALLOWED_ORIGINS`를 지정합니다.
+기존 SSO를 연결하려면 `.env`에 discovery가 광고하는 정확한 `SSO_ISSUER_URL`, 등록한 `SSO_CLIENT_ID`와 필요한 경우 `SSO_CLIENT_SECRET`을 설정합니다. SSO 주소 예시는 `https://sso.example.com`이며, discovery의 issuer와 설정값이 정확히 일치해야 합니다. SSO 관리자에 `SSO_REDIRECT_URL`의 정확한 URL(기본 `http://localhost:8080/auth/callback`), `authorization_code`, `code`, `openid`, PKCE S256을 등록해야 합니다. 운영에서는 웹·API의 HTTPS 주소에 맞게 `WEB_PUBLIC_URL`, `SSO_REDIRECT_URL`, `ALLOWED_ORIGINS`를 지정합니다.
 
-로그인 사용자는 SSO subject로 지속 식별합니다. 익명 기록은 로그인 기록으로 자동 이전하지 않습니다. 로그인만으로 소유자의 CLI·파일·MCP 권한을 부여하지 않습니다. 기존 `person_example` 기록의 SSO 소유자 매핑도 별도 작업입니다. Go 직접 실행은 `.env`를 자동으로 읽지 않으므로 셸에 값을 설정해야 합니다.
+로그인 사용자는 SSO subject로 지속 식별합니다. 익명 기록은 로그인 기록으로 자동 이전하지 않습니다. 로그인만으로 소유자의 CLI·파일·MCP 권한을 부여하지 않습니다. 기존 로컬 소유자 기록의 SSO 소유자 매핑도 별도 작업입니다. Go 직접 실행은 `.env`를 자동으로 읽지 않으므로 셸에 값을 설정해야 합니다.
 
 쿠키 보호 키는 기본적으로 영속 HOME의 `session.key`에 생성됩니다. 여러 backend replica는 동일한 `SESSION_ENCRYPTION_KEY`(32바이트 난수의 base64)를 사용해야 합니다. 상세 계약은 [상대 식별과 익명 보존 설계](docs/architecture/identity-and-retention.md)를 참고하세요.
 
@@ -258,3 +258,7 @@ go test ./...
 ## MVP 경계
 
 이 버전은 분산 작업 큐, 복잡한 관계 점수, 다중 Parent, 조직 RBAC, 외부 서비스 연동을 의도적으로 포함하지 않습니다. 먼저 “하나의 Identity가 대화하고, 기억하고, 작업하고, 나중에 다시 이어지는가?”를 검증합니다.
+
+## 프론트 CI
+
+`.woodpecker/frontend.yaml`은 push, pull request, 수동 실행에서 프론트만 검사합니다. Node.js 22와 pnpm 11.19.0으로 잠금 파일을 고정해 설치하고, 린트와 `pnpm test`(빌드 후 테스트)를 실행합니다. 백엔드·DB·이미지 게시·배포는 실행하지 않습니다. CI는 런타임 URL을 비워 외부 API 없이 미리보기 모드로 빌드합니다. 저장소를 Woodpecker에 연결하고 활성화해야 원격 실행됩니다.
