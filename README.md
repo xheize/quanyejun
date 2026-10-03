@@ -23,8 +23,12 @@ LLM을 정체성 자체가 아닌 **교체 가능한 추론 엔진**으로 사�
 ## 구조
 
 ```text
-app/                웹 UI
+frontend/           웹 UI (독립 Node 프로젝트)
+  app/              화면 및 클라이언트 로직
+  worker/           Cloudflare 진입점
+  Dockerfile        프론트 이미지 (빌드 컨텍스트: frontend/)
 runtime/            Go 런타임
+  Dockerfile        엔진 이미지 (빌드 컨텍스트: 저장소 루트)
   cmd/server/       실행 진입점
   internal/         domain, environment, store, llm, event hub, tasks, HTTP/WebSocket
 deploy/lxc/         LXC 게스트용 systemd 배포 어댑터
@@ -54,6 +58,7 @@ skills/             Provider 독립적인 로컬 SKILL.md 예제
 3. 다른 PowerShell에서 웹을 시작합니다.
 
    ```powershell
+   Set-Location frontend
    pnpm install
    $env:NEXT_PUBLIC_RUNTIME_URL = "http://localhost:8080"
    pnpm dev
@@ -71,7 +76,9 @@ skills/             Provider 독립적인 로컬 SKILL.md 예제
 
 ### Docker Compose로 전체 실행
 
-루트의 `Dockerfile.frontend`는 웹 UI(Node.js, 포트 3000), `Dockerfile.backend`는 Go 런타임(API, 포트 8080)을 각각 빌드합니다. 두 파일 모두 저장소 루트를 빌드 컨텍스트로 사용하며, `compose.yaml`은 각 Dockerfile로 두 서비스와 PostgreSQL을 함께 실행합니다.
+`frontend/Dockerfile`은 웹 UI(Node.js, 포트 3000), `runtime/Dockerfile`은 Go 엔진(API, 포트 8080)을 각각 빌드합니다. 프론트 빌드 컨텍스트는 `frontend/`이며 엔진은 공용 `config/`와 `skills/`를 포함하도록 저장소 루트를 사용합니다. 루트 `compose.yaml`은 두 서비스와 PostgreSQL을 함께 실행합니다.
+
+로컬 웹 개발의 환경 변수는 `frontend/.env`에 두고, Compose 설정은 루트 `.env`에 둡니다. 각 위치의 `.env.example`을 참고하세요. Cloudflare 프론트 배포의 프로젝트 루트도 `frontend/`로 지정합니다.
 
 ```powershell
 $env:NEXT_PUBLIC_RUNTIME_URL = "http://localhost:8080"
@@ -81,8 +88,8 @@ docker compose up --build
 이미지를 개별 빌드하려면 저장소 루트에서 실행합니다.
 
 ```powershell
-docker build -f Dockerfile.backend -t quanyejun-backend .
-docker build -f Dockerfile.frontend -t quanyejun-frontend --build-arg NEXT_PUBLIC_RUNTIME_URL=http://localhost:8080 .
+docker build -f runtime/Dockerfile -t quanyejun-backend .
+docker build -t quanyejun-frontend --build-arg NEXT_PUBLIC_RUNTIME_URL=http://localhost:8080 ./frontend
 ```
 
 기본 접속 주소는 웹 `http://localhost:3000`, API `http://localhost:8080`입니다. 브라우저가 API에 접근할 공개 주소가 다르면 이미지를 빌드하기 전에 `NEXT_PUBLIC_RUNTIME_URL`을 설정하세요. 모델 Provider와 API 키도 `.env` 또는 현재 셸 환경 변수로 전달할 수 있으며 기본값은 네트워크 키가 필요 없는 `builtin`입니다.
@@ -229,7 +236,8 @@ OpenAI 응답의 Provider-side 저장 여부와 무관하게 QuanYejun의 대화
 ## 확인
 
 ```powershell
-pnpm build
+pnpm --dir frontend test
+pnpm --dir frontend lint
 Set-Location runtime
 go test ./...
 ```

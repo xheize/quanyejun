@@ -20,7 +20,7 @@ services:
   runtime:
     build:
       context: .
-      dockerfile: Dockerfile.backend
+      dockerfile: runtime/Dockerfile
     environment:
       PORT: 8080
       DATABASE_URL: postgres://quanyejun:quanyejun@postgres:5432/quanyejun?sslmode=disable
@@ -60,8 +60,8 @@ services:
 
   web:
     build:
-      context: .
-      dockerfile: Dockerfile.frontend
+      context: ./frontend
+      dockerfile: Dockerfile
       args:
         NEXT_PUBLIC_RUNTIME_URL: ${NEXT_PUBLIC_RUNTIME_URL:-}
     environment:

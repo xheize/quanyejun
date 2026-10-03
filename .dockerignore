@@ -1,6 +1,7 @@
 .git
 .gitignore
 .gitattributes
+frontend
 
 .env
 .env.*
@@ -9,6 +10,7 @@
 *.key
 
 node_modules
+**/node_modules
 .pnpm-store
 .next
 .vinext
