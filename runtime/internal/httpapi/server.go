@@ -143,6 +143,17 @@ func (s *Server) environmentInfo(c *gin.Context) {
 
 func (s *Server) bootstrap(c *gin.Context) {
 	actorID := actor(c)
+	// Capture a replay boundary BEFORE reading independent snapshots. Events
+	// written during bootstrap must still be replayed, even if absent in a snapshot.
+	boundary, err := s.store.ListEventsAfter(c.Request.Context(), actorID, "", 1)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	eventCursor := store.EventStreamStart
+	if len(boundary) > 0 {
+		eventCursor = boundary[len(boundary)-1].ID
+	}
 	identity, err := s.store.EnsureIdentity(c.Request.Context())
 	if err != nil {
 		fail(c, err)
@@ -179,7 +190,7 @@ func (s *Server) bootstrap(c *gin.Context) {
 		fail(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"session": principal(c), "identity": identity, "environment": environmentInfo, "provider": s.provider.Info(), "messages": messages, "memories": memories, "tasks": tasksList, "runs": runs, "events": events})
+	c.JSON(http.StatusOK, gin.H{"session": principal(c), "identity": identity, "environment": environmentInfo, "provider": s.provider.Info(), "messages": messages, "memories": memories, "tasks": tasksList, "runs": runs, "events": events, "eventCursor": eventCursor})
 }
 
 type messageInput struct {

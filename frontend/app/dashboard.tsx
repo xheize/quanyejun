@@ -29,6 +29,7 @@ type Bootstrap = {
   tasks: RuntimeTask[];
   runs: AgentRun[];
   events: RuntimeEvent[];
+  eventCursor?: string;
 };
 
 
@@ -131,7 +132,7 @@ export function Dashboard() {
       setEvents(data.events || []);
       setProvider(data.provider || previewProvider);
       setEnvironment(data.environment || previewEnvironment);
-      lastEventId.current = data.events.at(-1)?.id || "";
+      lastEventId.current = data.eventCursor || "0";
     },
     cursor: () => lastEventId.current,
     onMessage: (data) => {
