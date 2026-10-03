@@ -148,7 +148,11 @@ func (r *Runner) launch(run domain.AgentRun, reserved bool) {
 			r.slots <- struct{}{}
 		}
 		defer func() { <-r.slots }()
-		ctx, cancel := context.WithTimeout(context.Background(), r.config.RunTimeout)
+		deadline := time.Now().Add(r.config.RunTimeout)
+		if !run.StartedAt.IsZero() {
+			deadline = run.StartedAt.Add(r.config.RunTimeout)
+		}
+		ctx, cancel := context.WithDeadline(context.Background(), deadline)
 		defer cancel()
 		ctx = domain.WithExpiry(ctx, run.ExpiresAt)
 		if run.ExpiresAt != nil {
@@ -168,8 +172,14 @@ func (r *Runner) launch(run domain.AgentRun, reserved bool) {
 }
 
 func (r *Runner) execute(ctx context.Context, run domain.AgentRun) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	now := time.Now().UTC()
-	run.Status, run.StartedAt, run.UpdatedAt, run.Attempt = "running", now, now, run.Attempt+1
+	if run.StartedAt.IsZero() {
+		run.StartedAt = now
+	}
+	run.Status, run.UpdatedAt, run.Attempt = "running", now, run.Attempt+1
 	if err := r.store.UpdateAgentRun(ctx, run); err != nil {
 		return err
 	}
@@ -203,15 +213,19 @@ func (r *Runner) execute(ctx context.Context, run domain.AgentRun) error {
 			return err
 		}
 	}
-	exchanges := make([]llm.ToolExchange, 0)
 	steps, err := r.store.ListRunSteps(ctx, run.ID)
 	if err != nil {
 		return err
 	}
-	sequence := len(steps)
-	toolCallCount := 0
+	exchanges, turnsUsed, toolCallCount, sequence, err := restoreExchanges(steps, run.Provider)
+	if err != nil {
+		return err
+	}
+	if toolCallCount > r.config.MaxToolCalls {
+		return fmt.Errorf("recovered run exceeds tool call budget")
+	}
 
-	for turn := 0; turn < r.config.MaxTurns; turn++ {
+	for turn := turnsUsed; turn < r.config.MaxTurns; turn++ {
 		sequence++
 		requestInput := mustJSON(map[string]any{"turn": turn + 1, "messageCount": len(messages), "memoryCount": len(memories), "toolCount": len(r.tools.DefinitionsFor(run.ActorID)), "toolCallsUsed": toolCallCount, "toolCallBudget": r.config.MaxToolCalls})
 		if err := r.appendStep(ctx, run, domain.RunStep{ID: uuid.NewString(), RunID: run.ID, Sequence: sequence, Kind: "model_request", Status: "completed", Input: requestInput, CreatedAt: time.Now().UTC(), CompletedAt: time.Now().UTC()}); err != nil {
@@ -226,7 +240,7 @@ func (r *Runner) execute(ctx context.Context, run domain.AgentRun) error {
 			return fmt.Errorf("provider turn: %w", err)
 		}
 		sequence++
-		resultOutput := mustJSON(map[string]any{"text": result.Text, "toolCalls": result.ToolCalls, "usage": result.Usage, "stopReason": result.StopReason})
+		resultOutput := mustJSON(map[string]any{"text": result.Text, "toolCalls": result.ToolCalls, "providerItems": result.ProviderItems, "usage": result.Usage, "stopReason": result.StopReason})
 		if err := r.appendStep(ctx, run, domain.RunStep{ID: uuid.NewString(), RunID: run.ID, Sequence: sequence, Kind: "model_response", Status: "completed", ProviderResponseID: result.ProviderResponseID, Output: resultOutput, CreatedAt: time.Now().UTC(), CompletedAt: time.Now().UTC()}); err != nil {
 			return err
 		}
