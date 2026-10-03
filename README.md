@@ -262,3 +262,14 @@ go test ./...
 ## 프론트 CI
 
 `.woodpecker/frontend.yaml`은 push, pull request, 수동 실행에서 프론트만 검사합니다. Node.js 22와 pnpm 11.19.0으로 잠금 파일을 고정해 설치하고, 린트와 `pnpm test`(빌드 후 테스트)를 실행합니다. 백엔드·DB·이미지 게시·배포는 실행하지 않습니다. CI는 런타임 URL을 비워 외부 API 없이 미리보기 모드로 빌드합니다. 저장소를 Woodpecker에 연결하고 활성화해야 원격 실행됩니다.
+
+## 라이선스
+
+이 프로젝트의 자체 코드는 **GNU Affero General Public License v3.0 only**
+(`SPDX-License-Identifier: AGPL-3.0-only`)로 배포합니다. 전체 조건은 [LICENSE](LICENSE)를 참고하세요.
+별도로 명시된 제3자 코드와 의존성에는 각각의 라이선스가 적용됩니다.
+
+이 프로젝트는 지식과 개선이 다음 사람에게도 이어지기를 바랍니다.
+상업적 이용을 허용하며, 이 소프트웨어를 이어받은 사람에게도 소스를 살펴보고, 고치고,
+다시 나눌 자유가 이어지기를 바랍니다. 이 문장은 프로젝트의 취지이며,
+법적 권리와 의무는 AGPLv3 전문을 따릅니다.
