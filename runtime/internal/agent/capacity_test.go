@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/quanyejun/quanyejun/runtime/internal/domain"
@@ -32,55 +33,44 @@ func (p *capacityProvider) Turn(ctx context.Context, _ llm.Request) (llm.Result,
 }
 
 func TestRecoverySharesConcurrencyLimit(t *testing.T) {
-	db := store.NewMemoryStore()
-	p := &capacityProvider{entered: make(chan struct{}, 8), release: make(chan struct{})}
-	t.Cleanup(func() {
-		select {
-		case <-p.release:
-		default:
-			close(p.release)
+	synctest.Test(t, func(t *testing.T) {
+		db := store.NewMemoryStore()
+		p := &capacityProvider{entered: make(chan struct{}, 8), release: make(chan struct{})}
+		t.Cleanup(func() {
+			select {
+			case <-p.release:
+			default:
+				close(p.release)
+			}
+		})
+		for i := 0; i < 8; i++ {
+			err := db.CreateAgentRun(context.Background(), domain.AgentRun{ID: fmt.Sprint(i), ActorID: "actor", Status: "queued", CreatedAt: time.Now()})
+			if err != nil {
+				t.Fatal(err)
+			}
 		}
-	})
-	for i := 0; i < 8; i++ {
-		err := db.CreateAgentRun(context.Background(), domain.AgentRun{ID: fmt.Sprint(i), ActorID: "actor", Status: "queued", CreatedAt: time.Now()})
-		if err != nil {
+		r := NewRunnerWithConfig(db, eventhub.New(), p, runtimetools.NewRegistry(db, testEnvironment(t)), "", HarnessConfig{MaxConcurrent: 2})
+		if err := r.Recover(context.Background()); err != nil {
 			t.Fatal(err)
 		}
-	}
-	r := NewRunnerWithConfig(db, eventhub.New(), p, runtimetools.NewRegistry(db, testEnvironment(t)), "", HarnessConfig{MaxConcurrent: 2})
-	if err := r.Recover(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	for i := 0; i < 2; i++ {
-		select {
-		case <-p.entered:
-		case <-time.After(time.Second):
-			t.Fatal("recovery did not start")
+		synctest.Wait()
+		if got := len(p.entered); got != 2 {
+			t.Fatalf("active model calls = %d, want 2", got)
 		}
-	}
-	select {
-	case <-p.entered:
-		t.Fatal("recovery exceeded limit")
-	case <-time.After(30 * time.Millisecond):
-	}
-	if _, err := r.Start("actor", "", "new"); !errors.Is(err, ErrCapacity) {
-		t.Fatalf("new run bypassed recovery capacity: %v", err)
-	}
-	close(p.release)
-	deadline := time.Now().Add(3 * time.Second)
-	for {
+		if _, err := r.Start("actor", "", "new"); !errors.Is(err, ErrCapacity) {
+			t.Fatalf("new run bypassed recovery capacity: %v", err)
+		}
+		close(p.release)
+		synctest.Wait()
 		runs, err := db.ListAgentRunsByStatus(context.Background(), []string{"completed"}, 100)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(runs) == 8 && len(r.slots) == 0 {
-			break
+		if len(runs) != 8 || len(r.slots) != 0 {
+			t.Fatalf("recovery incomplete: runs=%d slots=%d", len(runs), len(r.slots))
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("recovery stuck: completed %d", len(runs))
-		}
-		time.Sleep(time.Millisecond)
-	}
+
+	})
 }
 
 type failingMessageStore struct{ store.Store }

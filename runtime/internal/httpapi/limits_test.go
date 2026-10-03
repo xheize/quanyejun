@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/quanyejun/quanyejun/runtime/internal/domain"
@@ -147,58 +148,51 @@ func (p *blockingProvider) Turn(ctx context.Context, _ llm.Request) (llm.Result,
 }
 
 func TestConcurrencyRejectsBeforePersistingAndReleasesCapacity(t *testing.T) {
-	p := &blockingProvider{entered: make(chan struct{}, 12), release: make(chan struct{})}
-	t.Cleanup(func() {
-		select {
-		case <-p.release:
-		default:
-			close(p.release)
+	synctest.Test(t, func(t *testing.T) {
+		p := &blockingProvider{entered: make(chan struct{}, 12), release: make(chan struct{})}
+		t.Cleanup(func() {
+			select {
+			case <-p.release:
+			default:
+				close(p.release)
+			}
+		})
+		db := store.NewMemoryStore()
+		s := newTestServer(t, db, eventhub.New(), p, nil, "")
+		handler := s.Handler()
+		var actors []string
+		for i := 0; i < 12; i++ {
+			res := testRequest(handler, "POST", "/api/messages", nil, `{"content":"hello"}`)
+			want := 202
+			if i >= 4 {
+				want = 429
+			}
+			if res.Code != want {
+				t.Fatalf("request %d status=%d want=%d", i, res.Code, want)
+			}
+			cookie := cookieNamed(t, res, sessionCookie)
+			actor := sessionPrincipal(t, testRequest(handler, "GET", "/api/session", cookie, "")).ActorID
+			messages, _ := db.ListMessages(context.Background(), actor, 100)
+			if want == 429 && len(messages) != 0 {
+				t.Fatal("rejected request persisted a message")
+			}
+			if want == 202 {
+				actors = append(actors, actor)
+			}
 		}
+		synctest.Wait()
+		if got := len(p.entered); got != 4 {
+			t.Fatalf("active provider calls=%d, want 4", got)
+		}
+		close(p.release)
+		for _, actor := range actors {
+			waitForRun(t, db, actor)
+		}
+		synctest.Wait()
+		if _, err := s.agentRunner.StartForVisitor("anon:after-release", "", "hello", domain.VisitorContext{}, nil); err != nil {
+			t.Fatalf("capacity not released: %v", err)
+		}
+		waitForRun(t, db, "anon:after-release")
+
 	})
-	db := store.NewMemoryStore()
-	s := newTestServer(t, db, eventhub.New(), p, nil, "")
-	handler := s.Handler()
-	var actors []string
-	for i := 0; i < 12; i++ {
-		res := testRequest(handler, "POST", "/api/messages", nil, `{"content":"hello"}`)
-		want := 202
-		if i >= 4 {
-			want = 429
-		}
-		if res.Code != want {
-			t.Fatalf("request %d status=%d want=%d", i, res.Code, want)
-		}
-		cookie := cookieNamed(t, res, sessionCookie)
-		actor := sessionPrincipal(t, testRequest(handler, "GET", "/api/session", cookie, "")).ActorID
-		messages, _ := db.ListMessages(context.Background(), actor, 100)
-		if want == 429 && len(messages) != 0 {
-			t.Fatal("rejected request persisted a message")
-		}
-		if want == 202 {
-			actors = append(actors, actor)
-		}
-	}
-	for i := 0; i < 4; i++ {
-		select {
-		case <-p.entered:
-		case <-time.After(3 * time.Second):
-			t.Fatal("provider did not start")
-		}
-	}
-	close(p.release)
-	for _, actor := range actors {
-		waitForRun(t, db, actor)
-	}
-	deadline := time.Now().Add(time.Second)
-	for {
-		_, err := s.agentRunner.StartForVisitor("anon:after-release", "", "hello", domain.VisitorContext{}, nil)
-		if err == nil {
-			waitForRun(t, db, "anon:after-release")
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("capacity was not released", err)
-		}
-		time.Sleep(time.Millisecond)
-	}
 }

@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -51,62 +52,65 @@ func sessionPrincipal(t *testing.T, response *httptest.ResponseRecorder) Princip
 }
 
 func TestAnonymousIdentityAndIsolation(t *testing.T) {
-	db := store.NewMemoryStore()
-	s := newTestServer(t, db, eventhub.New(), llm.NewBuiltinProvider(), []string{"http://localhost:3000"}, "")
-	h := s.Handler()
-	a := testRequest(h, "GET", "/api/session", nil, "")
-	ca := cookieNamed(t, a, sessionCookie)
-	pa := sessionPrincipal(t, a)
-	b := testRequest(h, "GET", "/api/session", nil, "")
-	cb := cookieNamed(t, b, sessionCookie)
-	pb := sessionPrincipal(t, b)
-	if pa.ActorID == pb.ActorID || !domain.Anonymous(pa.ActorID) || !ca.HttpOnly {
-		t.Fatal("anonymous identity missing")
-	}
-	if got := sessionPrincipal(t, testRequest(h, "GET", "/api/session?actorId=person_example", ca, "")); got.ActorID != pa.ActorID {
-		t.Fatal("anonymous identity changed")
-	}
-	created := testRequest(h, "POST", "/api/messages", ca, `{"actorId":"person_example","content":"private message"}`)
-	if created.Code != 202 {
-		t.Fatal(created.Body.String())
-	}
-	var result struct {
-		RunID       string         `json:"runId"`
-		UserMessage domain.Message `json:"userMessage"`
-	}
-	_ = json.Unmarshal(created.Body.Bytes(), &result)
-	if result.UserMessage.ActorID != pa.ActorID || result.UserMessage.ExpiresAt == nil {
-		t.Fatal("client actor was trusted or TTL missing")
-	}
-	waitForRun(t, db, pa.ActorID)
-	for _, path := range []string{"/api/bootstrap?actorId=" + pa.ActorID, "/api/events?actorId=" + pa.ActorID} {
-		res := testRequest(h, "GET", path, cb, "")
-		if strings.Contains(res.Body.String(), "private message") {
-			t.Fatalf("other actor leaked at %s", path)
+	synctest.Test(t, func(t *testing.T) {
+		db := store.NewMemoryStore()
+		s := newTestServer(t, db, eventhub.New(), llm.NewBuiltinProvider(), []string{"http://localhost:3000"}, "")
+		h := s.Handler()
+		a := testRequest(h, "GET", "/api/session", nil, "")
+		ca := cookieNamed(t, a, sessionCookie)
+		pa := sessionPrincipal(t, a)
+		b := testRequest(h, "GET", "/api/session", nil, "")
+		cb := cookieNamed(t, b, sessionCookie)
+		pb := sessionPrincipal(t, b)
+		if pa.ActorID == pb.ActorID || !domain.Anonymous(pa.ActorID) || !ca.HttpOnly {
+			t.Fatal("anonymous identity missing")
 		}
-	}
-	if res := testRequest(h, "GET", "/api/runs/"+result.RunID, cb, ""); res.Code != 404 {
-		t.Fatal("cross-actor run access")
-	}
-	tampered := *ca
-	tampered.Value = "x" + ca.Value
-	if got := sessionPrincipal(t, testRequest(h, "GET", "/api/session", &tampered, "")); got.ActorID == pa.ActorID {
-		t.Fatal("tampered cookie accepted")
-	}
-	request := httptest.NewRequest("POST", "/api/messages", strings.NewReader(`{"content":"csrf"}`))
-	request.AddCookie(ca)
-	response := httptest.NewRecorder()
-	h.ServeHTTP(response, request)
-	if response.Code != 403 {
-		t.Fatal("missing CSRF header accepted")
-	}
-	request = httptest.NewRequest("GET", "/api/bootstrap", nil)
-	request.Header.Set("Origin", "https://untrusted.example")
-	response = httptest.NewRecorder()
-	h.ServeHTTP(response, request)
-	if response.Code != 403 {
-		t.Fatal("untrusted origin accepted")
-	}
+		if got := sessionPrincipal(t, testRequest(h, "GET", "/api/session?actorId=person_example", ca, "")); got.ActorID != pa.ActorID {
+			t.Fatal("anonymous identity changed")
+		}
+		created := testRequest(h, "POST", "/api/messages", ca, `{"actorId":"person_example","content":"private message"}`)
+		if created.Code != 202 {
+			t.Fatal(created.Body.String())
+		}
+		var result struct {
+			RunID       string         `json:"runId"`
+			UserMessage domain.Message `json:"userMessage"`
+		}
+		_ = json.Unmarshal(created.Body.Bytes(), &result)
+		if result.UserMessage.ActorID != pa.ActorID || result.UserMessage.ExpiresAt == nil {
+			t.Fatal("client actor was trusted or TTL missing")
+		}
+		waitForRun(t, db, pa.ActorID)
+		for _, path := range []string{"/api/bootstrap?actorId=" + pa.ActorID, "/api/events?actorId=" + pa.ActorID} {
+			res := testRequest(h, "GET", path, cb, "")
+			if strings.Contains(res.Body.String(), "private message") {
+				t.Fatalf("other actor leaked at %s", path)
+			}
+		}
+		if res := testRequest(h, "GET", "/api/runs/"+result.RunID, cb, ""); res.Code != 404 {
+			t.Fatal("cross-actor run access")
+		}
+		tampered := *ca
+		tampered.Value = "x" + ca.Value
+		if got := sessionPrincipal(t, testRequest(h, "GET", "/api/session", &tampered, "")); got.ActorID == pa.ActorID {
+			t.Fatal("tampered cookie accepted")
+		}
+		request := httptest.NewRequest("POST", "/api/messages", strings.NewReader(`{"content":"csrf"}`))
+		request.AddCookie(ca)
+		response := httptest.NewRecorder()
+		h.ServeHTTP(response, request)
+		if response.Code != 403 {
+			t.Fatal("missing CSRF header accepted")
+		}
+		request = httptest.NewRequest("GET", "/api/bootstrap", nil)
+		request.Header.Set("Origin", "https://untrusted.example")
+		response = httptest.NewRecorder()
+		h.ServeHTTP(response, request)
+		if response.Code != 403 {
+			t.Fatal("untrusted origin accepted")
+		}
+
+	})
 }
 
 func TestSSOCodePKCEUserInfoAndRevocation(t *testing.T) {

@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"encoding/json"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -88,19 +87,14 @@ func TestRunStepEventRedactsInputAndOutput(t *testing.T) {
 	}
 }
 
+// Only inspection is expected in these unit tests. Other environment methods
+// deliberately remain unavailable; real filesystem/CLI behavior is tested in environment.
+type staticTestEnvironment struct{ environment.Environment }
+
+func (staticTestEnvironment) Inspect(context.Context) (environment.Info, error) {
+	return environment.Info{Kind: "test", Profile: "test", Authority: environment.Authority{Mode: "test"}}, nil
+}
 func testEnvironment(t *testing.T) environment.Environment {
 	t.Helper()
-	root := t.TempDir()
-	local := environment.NewLocal(environment.Config{
-		Kind: "test", Profile: "test",
-		Paths: environment.Paths{
-			Home: filepath.Join(root, "home"), Workspace: filepath.Join(root, "workspace"),
-			Config: filepath.Join(root, "config"), Cache: filepath.Join(root, "cache"),
-		},
-		Authority: environment.Authority{Mode: "test"},
-	})
-	if err := local.Prepare(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	return local
+	return staticTestEnvironment{}
 }

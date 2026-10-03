@@ -3,14 +3,16 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"strings"
+	"testing"
+	"testing/synctest"
+	"time"
+
 	"github.com/quanyejun/quanyejun/runtime/internal/domain"
 	"github.com/quanyejun/quanyejun/runtime/internal/eventhub"
 	"github.com/quanyejun/quanyejun/runtime/internal/llm"
 	"github.com/quanyejun/quanyejun/runtime/internal/store"
 	tools "github.com/quanyejun/quanyejun/runtime/internal/tools"
-	"strings"
-	"testing"
-	"time"
 )
 
 func completedExchange() []domain.RunStep {
@@ -31,20 +33,28 @@ func TestRestoreCompletedExchange(t *testing.T) {
 	}
 }
 func TestRestoreIncompleteHistoryFailsClosed(t *testing.T) {
-	for _, n := range []int{1, 2, 3} {
-		if _, _, _, _, err := restoreExchanges(completedExchange()[:n], "openai"); err == nil {
-			t.Fatalf("accepted incomplete history of %d steps", n)
-		}
+	cases := []struct {
+		name     string
+		provider string
+		change   func([]domain.RunStep) []domain.RunStep
+	}{
+		{"request without response", "openai", func(s []domain.RunStep) []domain.RunStep { return s[:1] }},
+		{"response without tools", "openai", func(s []domain.RunStep) []domain.RunStep { return s[:2] }},
+		{"tool without result", "openai", func(s []domain.RunStep) []domain.RunStep { return s[:3] }},
+		{"legacy OpenAI continuation missing", "openai", func(s []domain.RunStep) []domain.RunStep {
+			s[1].Output = json.RawMessage(`{"toolCalls":[{"ID":"call","Name":"memory_remember"}]}`)
+			return s
+		}},
+		{"mismatched call id", "local", func(s []domain.RunStep) []domain.RunStep { s[3].CallID = "other"; return s }},
+		{"malformed result", "local", func(s []domain.RunStep) []domain.RunStep { s[3].Output = json.RawMessage(`{`); return s }},
+		{"duplicate sequence", "local", func(s []domain.RunStep) []domain.RunStep { s[3].Sequence = 3; return s }},
 	}
-	steps := completedExchange()
-	steps[1].Output = json.RawMessage(`{"toolCalls":[{"ID":"call","Name":"memory_remember"}]}`)
-	if _, _, _, _, err := restoreExchanges(steps, "openai"); err == nil {
-		t.Fatal("accepted missing provider continuation")
-	}
-	steps = completedExchange()
-	steps[3].CallID = "other"
-	if _, _, _, _, err := restoreExchanges(steps, "local"); err == nil {
-		t.Fatal("accepted mismatched result")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, _, _, _, err := restoreExchanges(tc.change(completedExchange()), tc.provider); err == nil {
+				t.Fatal("accepted unsafe history")
+			}
+		})
 	}
 }
 
@@ -86,11 +96,17 @@ func TestRecoveredExecutionUsesSavedResultsAndBudgets(t *testing.T) {
 		if len(p.requests) != 1 || len(p.requests[0].Exchanges) != 1 {
 			t.Fatal("saved result not forwarded")
 		}
-		memories, _ := db.ListMemories(ctx, run.ActorID, 10)
+		memories, err := db.ListMemories(ctx, run.ActorID, 10)
+		if err != nil {
+			t.Fatal(err)
+		}
 		if len(memories) != 0 {
 			t.Fatal("completed memory tool was executed again")
 		}
-		steps, _ := db.ListRunSteps(ctx, run.ID)
+		steps, err := db.ListRunSteps(ctx, run.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
 		results := 0
 		for _, step := range steps {
 			if step.Kind == "tool_result" {
@@ -120,7 +136,10 @@ func TestRecoveredToolBudgetCannotReset(t *testing.T) {
 	if err := r.execute(ctx, run); err == nil || !strings.Contains(err.Error(), "tool call budget") {
 		t.Fatalf("reset tool budget: %v", err)
 	}
-	memories, _ := db.ListMemories(ctx, run.ActorID, 10)
+	memories, err := db.ListMemories(ctx, run.ActorID, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(memories) != 0 {
 		t.Fatal("over-budget tools executed")
 	}
@@ -138,4 +157,57 @@ func TestExpiredRecoveredExecutionDoesNotInvokeProvider(t *testing.T) {
 	if len(p.requests) != 0 {
 		t.Fatal("expired execution invoked provider")
 	}
+}
+
+func TestRecoverContinuesSavedExchangeWithoutReexecutingTool(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx := context.Background()
+		db := store.NewMemoryStore()
+		run := domain.AgentRun{ID: "interrupted", ActorID: "sso:visitor", Provider: "test", Status: "running", CreatedAt: time.Now(), StartedAt: time.Now()}
+		if err := db.CreateAgentRun(ctx, run); err != nil {
+			t.Fatal(err)
+		}
+		for _, step := range completedExchange() {
+			step.RunID = run.ID
+			if err := db.AppendRunStep(ctx, step); err != nil {
+				t.Fatal(err)
+			}
+		}
+		p := &restoredProvider{}
+		runner := NewRunner(db, eventhub.New(), p, tools.NewRegistry(db, testEnvironment(t)), "")
+		if err := runner.Recover(ctx); err != nil {
+			t.Fatal(err)
+		}
+		synctest.Wait()
+		current, err := db.GetAgentRun(ctx, run.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if current.Status != "completed" || current.Attempt != 1 {
+			t.Fatalf("unexpected recovered run: %+v", current)
+		}
+		if len(p.requests) != 1 {
+			t.Fatalf("model calls = %d, want 1", len(p.requests))
+		}
+		exchanges := p.requests[0].Exchanges
+		if len(exchanges) != 1 || len(exchanges[0].Outputs) != 1 || exchanges[0].Outputs[0].CallID != "call" {
+			t.Fatalf("saved continuation missing: %+v", exchanges)
+		}
+		steps, err := db.ListRunSteps(ctx, run.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, step := range steps {
+			if step.Sequence > 4 && (step.Kind == "tool_call" || step.Kind == "tool_result") {
+				t.Fatalf("replayed completed tool: %+v", step)
+			}
+		}
+		messages, err := db.ListMessages(ctx, run.ActorID, 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(messages) != 1 || messages[0].Content != "continued" {
+			t.Fatalf("unexpected final messages: %+v", messages)
+		}
+	})
 }

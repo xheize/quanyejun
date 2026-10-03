@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -21,72 +22,74 @@ import (
 )
 
 func TestMessageRoundTripAppearsInBootstrap(t *testing.T) {
-	dataStore := store.NewMemoryStore()
-	hub := eventhub.New()
-	provider := &recordingProvider{}
-	server := newTestServer(t, dataStore, hub, provider, []string{"http://localhost:3000"}, "루멘")
+	synctest.Test(t, func(t *testing.T) {
+		dataStore := store.NewMemoryStore()
+		hub := eventhub.New()
+		provider := &recordingProvider{}
+		server := newTestServer(t, dataStore, hub, provider, []string{"http://localhost:3000"}, "루멘")
 
-	body, _ := json.Marshal(map[string]string{"actorId": "person_example", "content": "이 문장을 기억해"})
-	request := httptest.NewRequest(http.MethodPost, "/api/messages", bytes.NewReader(body))
-	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("X-Requested-With", "QuanYejun")
-	response := httptest.NewRecorder()
-	server.Handler().ServeHTTP(response, request)
-	if response.Code != http.StatusAccepted {
-		t.Fatalf("create message status = %d, body = %s", response.Code, response.Body.String())
-	}
-	var created struct {
-		UserMessage struct {
-			ActorID string `json:"actorId"`
-		} `json:"userMessage"`
-	}
-	_ = json.Unmarshal(response.Body.Bytes(), &created)
-	waitForRun(t, dataStore, created.UserMessage.ActorID)
+		body, _ := json.Marshal(map[string]string{"actorId": "person_example", "content": "이 문장을 기억해"})
+		request := httptest.NewRequest(http.MethodPost, "/api/messages", bytes.NewReader(body))
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("X-Requested-With", "QuanYejun")
+		response := httptest.NewRecorder()
+		server.Handler().ServeHTTP(response, request)
+		if response.Code != http.StatusAccepted {
+			t.Fatalf("create message status = %d, body = %s", response.Code, response.Body.String())
+		}
+		var created struct {
+			UserMessage struct {
+				ActorID string `json:"actorId"`
+			} `json:"userMessage"`
+		}
+		_ = json.Unmarshal(response.Body.Bytes(), &created)
+		waitForRun(t, dataStore, created.UserMessage.ActorID)
 
-	bootstrapRequest := httptest.NewRequest(http.MethodGet, "/api/bootstrap?actorId=person_example", nil)
-	for _, cookie := range response.Result().Cookies() {
-		bootstrapRequest.AddCookie(cookie)
-	}
-	bootstrapResponse := httptest.NewRecorder()
-	server.Handler().ServeHTTP(bootstrapResponse, bootstrapRequest)
-	if bootstrapResponse.Code != http.StatusOK {
-		t.Fatalf("bootstrap status = %d", bootstrapResponse.Code)
-	}
+		bootstrapRequest := httptest.NewRequest(http.MethodGet, "/api/bootstrap?actorId=person_example", nil)
+		for _, cookie := range response.Result().Cookies() {
+			bootstrapRequest.AddCookie(cookie)
+		}
+		bootstrapResponse := httptest.NewRecorder()
+		server.Handler().ServeHTTP(bootstrapResponse, bootstrapRequest)
+		if bootstrapResponse.Code != http.StatusOK {
+			t.Fatalf("bootstrap status = %d", bootstrapResponse.Code)
+		}
 
-	var payload struct {
-		Identity struct {
-			ID   string `json:"id"`
-			Name string `json:"name"`
-		} `json:"identity"`
-		Environment struct {
-			Kind    string `json:"kind"`
-			Profile string `json:"profile"`
-		} `json:"environment"`
-		Messages []any `json:"messages"`
-		Memories []any `json:"memories"`
-		Events   []any `json:"events"`
-	}
-	if err := json.Unmarshal(bootstrapResponse.Body.Bytes(), &payload); err != nil {
-		t.Fatal(err)
-	}
-	if len(payload.Messages) != 2 {
-		t.Fatalf("messages = %d, want 2", len(payload.Messages))
-	}
-	if payload.Identity.ID != "identity_quanyejun" || payload.Identity.Name != "루멘" {
-		t.Fatalf("identity = %#v", payload.Identity)
-	}
-	if payload.Environment.Kind != "local" || payload.Environment.Profile != "developer" {
-		t.Fatalf("environment = %#v", payload.Environment)
-	}
-	if provider.lastRequest.IdentityName != "루멘" {
-		t.Fatalf("provider identity name = %q", provider.lastRequest.IdentityName)
-	}
-	if len(payload.Memories) != 1 {
-		t.Fatalf("memories = %d, want 1", len(payload.Memories))
-	}
-	if len(payload.Events) < 8 {
-		t.Fatalf("events = %d, want persisted run and tool events", len(payload.Events))
-	}
+		var payload struct {
+			Identity struct {
+				ID   string `json:"id"`
+				Name string `json:"name"`
+			} `json:"identity"`
+			Environment struct {
+				Kind    string `json:"kind"`
+				Profile string `json:"profile"`
+			} `json:"environment"`
+			Messages []any `json:"messages"`
+			Memories []any `json:"memories"`
+			Events   []any `json:"events"`
+		}
+		if err := json.Unmarshal(bootstrapResponse.Body.Bytes(), &payload); err != nil {
+			t.Fatal(err)
+		}
+		if len(payload.Messages) != 2 {
+			t.Fatalf("messages = %d, want 2", len(payload.Messages))
+		}
+		if payload.Identity.ID != "identity_quanyejun" || payload.Identity.Name != "루멘" {
+			t.Fatalf("identity = %#v", payload.Identity)
+		}
+		if payload.Environment.Kind != "local" || payload.Environment.Profile != "developer" {
+			t.Fatalf("environment = %#v", payload.Environment)
+		}
+		if provider.lastRequest.IdentityName != "루멘" {
+			t.Fatalf("provider identity name = %q", provider.lastRequest.IdentityName)
+		}
+		if len(payload.Memories) != 1 {
+			t.Fatalf("memories = %d, want 1", len(payload.Memories))
+		}
+		if len(payload.Events) < 8 {
+			t.Fatalf("events = %d, want persisted run and tool events", len(payload.Events))
+		}
+	})
 }
 
 type recordingProvider struct {
@@ -179,34 +182,23 @@ func newTestServer(t *testing.T, dataStore store.Store, hub *eventhub.Hub, provi
 
 func waitForRun(t *testing.T, dataStore store.Store, actorID string) {
 	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		runs, err := dataStore.ListAgentRuns(context.Background(), actorID, 1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(runs) == 1 && (runs[0].Status == "completed" || runs[0].Status == "failed") {
-			if runs[0].Status == "failed" {
-				t.Fatalf("run failed: %s", runs[0].Error)
-			}
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatal("agent run did not complete")
-}
-
-func newTestEnvironment(t *testing.T) environment.Environment {
-	t.Helper()
-	root := t.TempDir()
-	executionEnvironment := environment.NewLocal(environment.ConfigFromEnvironment(func(key string) string {
-		if key == "QUANYEJUN_RUNTIME_ROOT" {
-			return root
-		}
-		return ""
-	}))
-	if err := executionEnvironment.Prepare(context.Background()); err != nil {
+	synctest.Wait()
+	runs, err := dataStore.ListAgentRuns(context.Background(), actorID, 1)
+	if err != nil {
 		t.Fatal(err)
 	}
-	return executionEnvironment
+	if len(runs) != 1 || runs[0].Status != "completed" {
+		t.Fatalf("run did not complete: %+v", runs)
+	}
+}
+
+// Real CLI discovery belongs to environment tests, not HTTP tests.
+type staticTestEnvironment struct{ environment.Environment }
+
+func (staticTestEnvironment) Inspect(context.Context) (environment.Info, error) {
+	return environment.Info{Kind: "local", Profile: "developer", Authority: environment.Authority{Mode: "test"}}, nil
+}
+func newTestEnvironment(t *testing.T) environment.Environment {
+	t.Helper()
+	return staticTestEnvironment{}
 }
