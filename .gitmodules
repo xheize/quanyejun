@@ -1,0 +1,3 @@
+[submodule "references/xheize-design"]
+	path = references/xheize-design
+	url = https://github.com/xheize/xheize-design.git
