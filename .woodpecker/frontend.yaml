@@ -2,6 +2,13 @@
 when:
   - event: [push, pull_request, manual]
 
+clone:
+  - name: git
+    image: woodpeckerci/plugin-git
+    settings:
+      # Shared design assets are vendored; the private reference is not a build input.
+      recursive: false
+
 steps:
   - name: frontend-checks
     image: node:22-bookworm-slim
@@ -14,5 +21,6 @@ steps:
       - cd frontend
       - pnpm install --frozen-lockfile
       - pnpm lint
+      - pnpm typecheck
       # pnpm test builds the frontend before running the Node tests.
       - pnpm test

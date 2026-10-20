@@ -1,0 +1,6 @@
+/* Service decisions live here; shared snapshots must remain unmodified. */
+[data-x-product="quanyejun"][data-x-theme="light"] {
+  --q-accent: #c9f36b;
+  --q-on-accent: #202020;
+  /* Lime identifies the service. Statuses use the shared semantic palette. */
+}
