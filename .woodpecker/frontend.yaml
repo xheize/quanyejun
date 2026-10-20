@@ -2,6 +2,13 @@
 when:
   - event: [push, pull_request, manual]
 
+clone:
+  - name: git
+    image: woodpeckerci/plugin-git
+    settings:
+      # Shared design assets are vendored; the private reference is not a build input.
+      recursive: false
+
 steps:
   - name: frontend-checks
     image: node:22-bookworm-slim
