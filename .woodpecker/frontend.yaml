@@ -14,5 +14,6 @@ steps:
       - cd frontend
       - pnpm install --frozen-lockfile
       - pnpm lint
+      - pnpm typecheck
       # pnpm test builds the frontend before running the Node tests.
       - pnpm test

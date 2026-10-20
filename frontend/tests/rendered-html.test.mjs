@@ -23,6 +23,16 @@ test("server-renders the QuanYejun identity surface", async () => {
   assert.match(html, /PERSISTENT IDENTITY/);
   assert.match(html, /하나의 이어지는 대화/);
   assert.match(html, /WORLD STATE/);
+  assert.match(html, /data-x-product="quanyejun"/);
+  assert.match(html, /data-x-theme="light"/);
+  for (const destination of ["conversation", "activity", "memory", "tasks"]) {
+    assert.match(html, new RegExp(`href="#${destination}"`));
+    assert.equal([...html.matchAll(new RegExp(` id="${destination}"`, "g"))].length, 1);
+    assert.match(html, new RegExp(`id="${destination}"[^>]*tabindex="-1"`, "i"));
+  }
+  assert.match(html, /아직 작업이 없습니다/);
+  assert.match(html, /aria-describedby="composer-help"/);
+  assert.match(html, /id="alias-feedback"[^>]*role="status"/);
   assert.match(html, /https:\/\/quanyejun\.local\/og\.png/);
   assert.doesNotMatch(html, /codex-preview|SkeletonPreview|react-loading-skeleton/);
 });

@@ -2,12 +2,10 @@
 
 import { FormEvent, KeyboardEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { connectRuntime, type ConnectionState } from "./runtime-connection";
+import { createPendingRun } from "./pending-run";
+import { applyRuntimeEvent, upsert, type EventCollections, type Message, type RuntimeTask, type Memory, type RuntimeEvent } from "./runtime-events";
 
-type Message = { expiresAt?: string; id: string; role: "user" | "assistant"; content: string; createdAt: string };
-type RuntimeTask = { expiresAt?: string; id: string; title: string; status: string; progress: number; result?: string; createdAt: string; updatedAt: string };
 type AgentRun = { id: string; status: string; goal: string; result?: string; error?: string; createdAt: string; updatedAt: string };
-type Memory = { expiresAt?: string; id: string; content: string; createdAt: string };
-type RuntimeEvent = { expiresAt?: string; id: string; type: string; timestamp: string; payload: Record<string, unknown> };
 type ProviderInfo = { id: string; label: string; model?: string; source: string };
 type EnvironmentInfo = {
   kind: string;
@@ -54,13 +52,8 @@ const eventCopy: Record<string, [string, string]> = {
   "task.created": ["작업 생성", "WebSocket 연결과 독립된 작업을 시작했습니다."],
   "task.progress": ["작업 진행", "결정적 런타임이 진행 상태를 갱신했습니다."],
   "task.completed": ["작업 완료", "결과를 저장하고 모든 연결에 전달했습니다."],
+  "task.failed": ["작업 실패", "실행 기록을 보존한 채 작업을 종료했습니다."],
 };
-
-function upsert<T extends { id: string }>(items: T[], item: T) {
-  const index = items.findIndex((current) => current.id === item.id);
-  if (index === -1) return [...items, item];
-  return items.map((current, currentIndex) => currentIndex === index ? item : current);
-}
 
 function shortTime(value: string) {
   if (!value) return "방금";
@@ -80,11 +73,10 @@ export function Dashboard() {
   const [session, setSession] = useState<VisitorSession | null>(null);
   const [aliasDraft, setAliasDraft] = useState("");
   const [savingAlias, setSavingAlias] = useState(false);
+  const [aliasFeedback, setAliasFeedback] = useState<{ text: string; error: boolean } | null>(null);
+  const [startingTask, setStartingTask] = useState(false);
   const [identityName, setIdentityName] = useState("QuanYejun");
-  const [messages, setMessages] = useState<Message[]>(seedMessages);
-  const [tasks, setTasks] = useState<RuntimeTask[]>([]);
-  const [memories, setMemories] = useState<Memory[]>([]);
-  const [events, setEvents] = useState<RuntimeEvent[]>([]);
+  const [{ messages, tasks, memories, events }, setCollections] = useState<EventCollections>({ messages: seedMessages, tasks: [], memories: [], events: [] });
   const [provider, setProvider] = useState<ProviderInfo>(previewProvider);
   const [environment, setEnvironment] = useState<EnvironmentInfo>(previewEnvironment);
   const [connection, setConnection] = useState<ConnectionState>(apiBase ? "connecting" : "offline");
@@ -93,30 +85,30 @@ export function Dashboard() {
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
   const [notice, setNotice] = useState("");
+  const [pendingRun] = useState(() => createPendingRun((active, failed) => {
+    setSending(active);
+    if (failed) setNotice("추론 작업이 실패했습니다. 활동 스트림에서 실행 기록을 확인해주세요.");
+  }));
+  const actorId = useRef("");
   const lastEventId = useRef("");
   const scrollAnchor = useRef<HTMLDivElement>(null);
+  const followingConversation = useRef(false);
+  const latestMessageId = messages.at(-1)?.id;
 
   const applyEvent = useCallback((event: RuntimeEvent) => {
     lastEventId.current = event.id;
-    setEvents((current) => upsert(current, event).slice(-20));
-    const message = event.payload.message as Message | undefined;
-    const task = event.payload.task as RuntimeTask | undefined;
-    if (message?.id) {
-      setMessages((current) => upsert(current, message));
-      if (message.role === "assistant") setSending(false);
-    }
-    if (task?.id) setTasks((current) => upsert(current, task));
-    if (event.type === "run.failed") {
-      setSending(false);
-      setNotice("추론 작업이 실패했습니다. 활동 스트림에서 실행 기록을 확인해주세요.");
-    }
-  }, []);
+    setCollections(current => applyRuntimeEvent(current, event));
+    const run = event.payload.run as AgentRun | undefined;
+    if (run?.id) pendingRun.observe(run);
+  }, [pendingRun]);
 
   useEffect(() => connectRuntime({
     apiBase,
     onBootstrap: async (response, signal) => {
       if (response.status === 401) {
-        setMessages([]); setMemories([]); setTasks([]); setEvents([]);
+        setCollections({ messages: [], memories: [], tasks: [], events: [] });
+        pendingRun.reset();
+        actorId.current = "";
         lastEventId.current = "";
         setSession({ id: "", role: "anonymous", loginEnabled: true, displayName: "방문자님" });
         setNotice("로그인 세션을 확인할 수 없습니다. 다시 로그인해주세요.");
@@ -124,15 +116,26 @@ export function Dashboard() {
       if (!response.ok) throw new Error("runtime unavailable");
       const data = await response.json() as Bootstrap;
       if (signal.aborted) return;
+      if (actorId.current && actorId.current !== data.session.id) pendingRun.reset();
+      actorId.current = data.session.id;
       setSession(data.session);
       setIdentityName(data.identity?.name || "QuanYejun");
-      setMessages(data.messages.length ? data.messages : seedMessages);
-      setTasks(data.tasks || []);
-      setMemories(data.memories || []);
-      setEvents(data.events || []);
+      setCollections({
+        messages: data.messages.length ? data.messages : seedMessages,
+        tasks: data.tasks || [], memories: data.memories || [], events: data.events || [],
+      });
       setProvider(data.provider || previewProvider);
       setEnvironment(data.environment || previewEnvironment);
       lastEventId.current = data.eventCursor || "0";
+      await pendingRun.restore(data.runs || [], async id => {
+        const result = await fetch(`${apiBase}/api/runs/${encodeURIComponent(id)}`, { credentials: "include", signal });
+        if (signal.aborted) throw new Error("bootstrap cancelled");
+        if (result.status === 404) return null;
+        if (!result.ok) throw new Error("run unavailable");
+        const detail = await result.json() as { run: AgentRun };
+        if (signal.aborted) throw new Error("bootstrap cancelled");
+        return detail.run;
+      });
     },
     cursor: () => lastEventId.current,
     onMessage: (data) => {
@@ -140,18 +143,30 @@ export function Dashboard() {
     },
     onState: setConnection,
     onExhausted: () => setRetriesExhausted(true),
-  }), [applyEvent]);
+  }), [applyEvent, pendingRun]);
 
   useEffect(() => {
-    scrollAnchor.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, sending]);
+    const observer = new IntersectionObserver(([entry]) => {
+      followingConversation.current = entry.isIntersecting;
+    }, { rootMargin: "120px" });
+    if (scrollAnchor.current) observer.observe(scrollAnchor.current);
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    if (!followingConversation.current) return;
+    scrollAnchor.current?.scrollIntoView({
+      block: "nearest",
+      behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth",
+    });
+  }, [latestMessageId, sending]);
 
   async function sendMessage(event: FormEvent) {
     event.preventDefault();
     const content = draft.trim();
     if (!runtimeReady || !content || sending) return;
     setDraft("");
-    setSending(true);
+    const request = pendingRun.begin();
     setNotice("");
     try {
       const response = await fetch(`${apiBase}/api/messages`, {
@@ -162,23 +177,25 @@ export function Dashboard() {
       });
       if (!response.ok) throw new Error("message failed");
       const result = await response.json() as { userMessage: Message; runId: string; run: AgentRun };
-      setMessages((current) => upsert(current, result.userMessage));
+      if (!pendingRun.accept(request, result.run)) return;
+      setCollections(current => ({ ...current, messages: upsert(current.messages, result.userMessage) }));
     } catch {
+      if (!pendingRun.reset(request)) return;
       setDraft(content);
       setNotice("런타임에 연결할 수 없습니다. 잠시 뒤 다시 시도해주세요.");
-      setSending(false);
     }
   }
 
   function handleComposerKey(event: KeyboardEvent<HTMLTextAreaElement>) {
-    if (event.key === "Enter" && !event.shiftKey) {
+    if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing && event.nativeEvent.keyCode !== 229) {
       event.preventDefault();
       event.currentTarget.form?.requestSubmit();
     }
   }
 
   async function startDemoTask() {
-    if (!runtimeReady) return;
+    if (!runtimeReady || startingTask) return;
+    setStartingTask(true);
     setNotice("");
     try {
       const response = await fetch(`${apiBase}/api/tasks/demo`, {
@@ -189,19 +206,19 @@ export function Dashboard() {
       });
       if (!response.ok) throw new Error("task failed");
       const task = await response.json() as RuntimeTask;
-      setTasks((current) => upsert(current, task));
+      setCollections(current => ({ ...current, tasks: upsert(current.tasks, task) }));
     } catch {
       setNotice("작업을 시작하려면 Go 런타임을 먼저 실행해주세요.");
-    }
+    } finally { setStartingTask(false); }
   }
 
   useEffect(() => {
     const timer = setInterval(() => {
       const live = (item: { expiresAt?: string }) => !item.expiresAt || Date.parse(item.expiresAt) > Date.now();
-      setMessages(items => items.filter(live));
-      setMemories(items => items.filter(live));
-      setTasks(items => items.filter(live));
-      setEvents(items => items.filter(live));
+      setCollections(current => ({
+        messages: current.messages.filter(live), memories: current.memories.filter(live),
+        tasks: current.tasks.filter(live), events: current.events.filter(live),
+      }));
       setSession(current => current?.displayNameExpiresAt && Date.parse(current.displayNameExpiresAt) <= Date.now()
         ? { ...current, displayName: "방문자님", displayNameExpiresAt: undefined } : current);
     }, 1000);
@@ -221,6 +238,7 @@ export function Dashboard() {
     event.preventDefault();
     if (!runtimeReady || savingAlias) return;
     setSavingAlias(true);
+    setAliasFeedback(null);
     try {
       const response = await fetch(`${apiBase}/api/session/display-name`, {
         method: "POST", credentials: "include",
@@ -231,8 +249,8 @@ export function Dashboard() {
       if (!response.ok) throw new Error(data.error || "별칭을 저장하지 못했습니다.");
       setSession(data as VisitorSession);
       setAliasDraft("");
-      setNotice("별칭을 저장했습니다.");
-    } catch (error) { setNotice(error instanceof Error ? error.message : "별칭을 저장하지 못했습니다."); }
+      setAliasFeedback({ text: "별칭을 저장했습니다.", error: false });
+    } catch (error) { setAliasFeedback({ text: error instanceof Error ? error.message : "별칭을 저장하지 못했습니다.", error: true }); }
     finally { setSavingAlias(false); }
   }
 
@@ -245,6 +263,7 @@ export function Dashboard() {
 
   return (
     <main className="shell">
+      <a className="skip-link x-button" href="#conversation">대화로 바로가기</a>
       <aside className="identity-panel">
         <div className="brand-mark" aria-hidden="true">Q</div>
         <div className="identity-copy">
@@ -255,21 +274,22 @@ export function Dashboard() {
           <p>현재 호칭: {session?.displayName || "방문자님"}</p>
           <form className="alias-form" onSubmit={saveAlias}>
             <label htmlFor="visitor-alias">대화용 별칭</label>
-            <input id="visitor-alias" value={aliasDraft} onChange={event => setAliasDraft(event.target.value)} placeholder="새 별칭 (최대 40자)" aria-describedby="alias-help" disabled={!runtimeReady || savingAlias} />
-            <button className="task-launch" type="submit" disabled={!runtimeReady || savingAlias}>{savingAlias ? "저장 중" : aliasDraft.trim() ? "별칭 저장" : "기본 호칭으로 초기화"}</button>
+            <input className="x-input" id="visitor-alias" value={aliasDraft} onChange={event => { setAliasDraft(event.target.value); setAliasFeedback(null); }} placeholder="새 별칭 (최대 40자)" aria-describedby="alias-help alias-feedback" aria-invalid={aliasFeedback?.error || undefined} disabled={!runtimeReady || savingAlias} />
+            <button className="x-button task-launch" type="submit" disabled={!runtimeReady || savingAlias} aria-busy={savingAlias}>{savingAlias ? "저장 중" : aliasDraft.trim() ? "별칭 저장" : "기본 호칭으로 초기화"}</button>
             <p id="alias-help">빈 값은 방문자님으로 초기화됩니다. 별칭은 로그인 상태나 권한을 바꾸지 않습니다.</p>
+            <p id="alias-feedback" className={aliasFeedback?.error ? "field-error" : "field-success"} role="status">{aliasFeedback?.text}</p>
           </form>
           <p>{!session ? "미리보기 · 대화는 저장되지 않습니다" : session.role === "authenticated" ? "로그인됨 · 대화가 계속 이어집니다" : "익명 · 각 기록은 생성 후 72시간까지만 보관됩니다"}</p>
-          {session?.role === "authenticated" ? <button className="task-launch" type="button" onClick={logout} disabled={!runtimeReady}>로그아웃</button> : session?.loginEnabled ? <a className="task-launch" href={`${apiBase}/auth/login`}>SSO 로그인</a> : <span>로그인 준비 중</span>}
+          {session?.role === "authenticated" ? <button className="x-button task-launch" type="button" onClick={logout} disabled={!runtimeReady}>로그아웃</button> : session?.loginEnabled ? <a className="x-button task-launch" href={`${apiBase}/auth/login`}>SSO 로그인</a> : <span>로그인 준비 중</span>}
           {session?.role !== "authenticated" && session?.loginEnabled && <p>로그인하면 회원 대화로 전환됩니다. 익명 기록은 이전되지 않습니다.</p>}
         </div>
         <nav className="primary-nav" aria-label="주요 메뉴">
-          <a className="nav-item active" href="#conversation"><span>◉</span> 대화 <small>{messages.length}</small></a>
-          <a className="nav-item" href="#activity"><span>↗</span> 활동</a>
-          <a className="nav-item" href="#memory"><span>◇</span> 기억</a>
-          <a className="nav-item" href="#tasks"><span>✓</span> 작업</a>
+          <a className="nav-item" href="#conversation"><span aria-hidden="true">◉</span> 대화 <small>{messages.length}</small></a>
+          <a className="nav-item" href="#activity"><span aria-hidden="true">↗</span> 활동</a>
+          <a className="nav-item" href="#memory"><span aria-hidden="true">◇</span> 기억</a>
+          <a className="nav-item" href="#tasks"><span aria-hidden="true">✓</span> 작업</a>
         </nav>
-        <section className="identity-card" id="memory">
+        <section className="identity-card">
           <div className="section-heading"><span>현재 상태</span><span className="quiet">{connection === "online" ? "LIVE" : "LOCAL"}</span></div>
           <dl>
             <div><dt>기억</dt><dd>{memories.length}</dd></div>
@@ -282,10 +302,10 @@ export function Dashboard() {
         <p className="environment-label" title={`${environment.os}/${environment.arch} · authority ${environment.authority.mode}`}>Environment · {availableTools} tools</p>
       </aside>
 
-      <section className="conversation" id="conversation">
+      <section className="conversation" id="conversation" tabIndex={-1} aria-labelledby="conversation-title">
         <header className="conversation-header">
-          <div><p className="eyebrow">하나의 이어지는 대화</p><h2>{session?.displayName || "방문자님"}과 {identityName}</h2></div>
-          <button className="task-launch" type="button" onClick={startDemoTask} disabled={!runtimeReady}>비동기 작업 실행</button>
+          <div><p className="eyebrow">하나의 이어지는 대화</p><h2 id="conversation-title">{session?.displayName || "방문자님"}과 {identityName}</h2></div>
+          <button className="x-button task-launch" type="button" onClick={startDemoTask} disabled={!runtimeReady || startingTask} aria-busy={startingTask}>{startingTask ? "작업 시작 중" : "비동기 작업 실행"}</button>
         </header>
         <div className="conversation-body" aria-live="polite">
           {!runtimeReady && <p className="preview-notice" role="status">{!apiBase
@@ -303,17 +323,19 @@ export function Dashboard() {
               </div>
             </article>
           ))}
-          {latestTask && (
-            <article className="task-card" id="tasks">
+          <section className="task-card" id="tasks" tabIndex={-1} aria-label="작업">
+          {latestTask ? (
+            <>
               <div className="task-topline">
                 <span className="task-icon">↗</span>
                 <div><p className="eyebrow">ASYNC TASK</p><h3>{latestTask.title}</h3></div>
-                <span className={`task-state ${latestTask.status}`}>{latestTask.status === "completed" ? "완료" : latestTask.status === "failed" ? "실패" : "실행 중"}</span>
+                <span className={`task-state ${latestTask.status}`}>{latestTask.status === "completed" ? "완료" : latestTask.status === "failed" ? "실패" : latestTask.status === "queued" ? "대기 중" : latestTask.status === "running" ? "실행 중" : "상태 확인 필요"}</span>
               </div>
-              <div className="progress-track"><span style={{ width: `${latestTask.progress}%` }} /></div>
-              <div className="task-footer"><span>{latestTask.result || "WebSocket과 독립적으로 실행 중"}</span><strong>{latestTask.progress}%</strong></div>
-            </article>
-          )}
+              <progress className="x-progress" max={100} value={latestTask.progress} aria-label={`${latestTask.title} 진행률`} />
+              <div className="task-footer"><span>{latestTask.result || (latestTask.status === "completed" ? "작업이 완료되었습니다." : latestTask.status === "failed" ? "작업이 실패했습니다. 활동 스트림을 확인해주세요." : latestTask.status === "queued" ? "실행을 기다리고 있습니다." : latestTask.status === "running" ? "연결과 독립적으로 실행 중" : "작업 상태를 확인해주세요.")}</span><strong>{latestTask.progress}%</strong></div>
+            </>
+          ) : <><h3>아직 작업이 없습니다</h3><p>비동기 작업을 실행하면 진행률과 결과가 여기에 표시됩니다.</p></>}
+          </section>
           {sending && <article className="message entity-message latest"><div className="avatar">{identityInitial}</div><div><div className="message-meta"><strong>{identityName}</strong><time>생각 중</time></div><div className="message-bubble typing"><span /><span /><span /></div></div></article>}
           <div ref={scrollAnchor} />
         </div>
@@ -321,19 +343,19 @@ export function Dashboard() {
           {notice && <p className="runtime-notice" role="alert">{notice}</p>}
           <form className="composer" onSubmit={sendMessage}>
             <label className="sr-only" htmlFor="message">메시지</label>
-            <textarea id="message" name="message" value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={handleComposerKey} placeholder={runtimeReady ? `${identityName}에게 메시지 보내기` : "서비스 연결 후 메시지를 보낼 수 있습니다"} disabled={!runtimeReady} rows={1} />
+            <textarea aria-describedby="composer-help" id="message" name="message" value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={handleComposerKey} placeholder={runtimeReady ? `${identityName}에게 메시지 보내기` : "서비스 연결 후 메시지를 보낼 수 있습니다"} disabled={!runtimeReady} rows={1} />
             <div className="composer-actions">
               <span className={`connection-chip ${connection}`}>{connection === "online" ? "실시간 연결" : !apiBase ? "미리보기" : "연결 대기"}</span>
-              <span>Enter 전송 · Shift + Enter 줄바꿈</span>
-              <button className="send-button" type="submit" aria-label="메시지 전송" disabled={!runtimeReady || !draft.trim() || sending}>↑</button>
+              <span id="composer-help">Enter 전송 · Shift + Enter 줄바꿈</span>
+              <button className="x-button x-button--primary send-button" type="submit" aria-label={sending ? "응답 기다리는 중" : "메시지 전송"} aria-busy={sending} disabled={!runtimeReady || !draft.trim() || sending}>↑</button>
             </div>
           </form>
           <p className="continuity-note">{runtimeReady ? "대화가 닫혀도 기억과 작업은 계속됩니다." : "현재 대화 전송과 작업 실행을 사용할 수 없습니다."}</p>
         </footer>
       </section>
 
-      <aside className="activity-panel" id="activity">
-        <header><div><p className="eyebrow">WORLD STATE</p><h2>지금 일어나는 일</h2></div><span className={`pulse-ring ${connection}`} aria-label={`연결 상태: ${connection}`} /></header>
+      <aside className="activity-panel" id="activity" tabIndex={-1} aria-labelledby="activity-title">
+        <header><div><p className="eyebrow">WORLD STATE</p><h2 id="activity-title">지금 일어나는 일</h2></div><span className={`pulse-ring ${connection}`} aria-hidden="true" /></header>
         <section className="focus-card">
           <p className="eyebrow">CURRENT FOCUS</p>
           <h3>{activeTask ? activeTask.title : "연결이 끊겨도\n일은 계속되어야 한다."}</h3>
@@ -343,11 +365,11 @@ export function Dashboard() {
           <div className="section-heading"><span>활동 스트림</span><span className="activity-count">{events.length}</span></div>
           {(visibleEvents.length ? visibleEvents : [previewEvent]).map((event) => {
             const copy = eventCopy[event.type] || [event.type, "정규화된 이벤트가 세계 상태에 반영됐습니다."];
-            const tone = event.type.includes("completed") ? "done" : event.type.includes("chat") ? "memory" : "live";
+            const tone = event.type.includes("failed") ? "failed" : event.type.includes("completed") ? "done" : event.type.includes("chat") ? "memory" : "live";
             return <article className="timeline-item" key={event.id}><div className={`timeline-dot ${tone}`} /><div><time>{relativeTime(event.timestamp)}</time><h3>{copy[0]}</h3><p>{copy[1]}</p></div></article>;
           })}
         </section>
-        <section className="memory-note"><div className="memory-glyph">◇</div><div><p className="eyebrow">RELEVANT MEMORY</p><p>“{latestMemory}”</p></div></section>
+        <section className="memory-note" id="memory" tabIndex={-1} aria-label="기억"><div className="memory-glyph" aria-hidden="true">◇</div><div><p className="eyebrow">RELEVANT MEMORY</p><p>“{latestMemory}”</p></div></section>
       </aside>
     </main>
   );
