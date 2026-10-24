@@ -274,8 +274,8 @@ export function Dashboard() {
           <p>현재 호칭: {session?.displayName || "방문자님"}</p>
           <form className="alias-form" onSubmit={saveAlias}>
             <label htmlFor="visitor-alias">대화용 별칭</label>
-            <input className="x-input" id="visitor-alias" value={aliasDraft} onChange={event => { setAliasDraft(event.target.value); setAliasFeedback(null); }} placeholder="새 별칭 (최대 40자)" aria-describedby="alias-help alias-feedback" aria-invalid={aliasFeedback?.error || undefined} disabled={!runtimeReady || savingAlias} />
-            <button className="x-button task-launch" type="submit" disabled={!runtimeReady || savingAlias} aria-busy={savingAlias}>{savingAlias ? "저장 중" : aliasDraft.trim() ? "별칭 저장" : "기본 호칭으로 초기화"}</button>
+            <input className="x-input" id="visitor-alias" value={aliasDraft} onChange={event => { setAliasDraft(event.target.value); setAliasFeedback(null); }} placeholder="새 별칭 (최대 40자)" aria-describedby="alias-help alias-feedback" aria-invalid={aliasFeedback?.error || undefined} disabled={!runtimeReady} readOnly={savingAlias} />
+            <button className="x-button task-launch" type="submit" disabled={!runtimeReady} aria-disabled={savingAlias} aria-busy={savingAlias}>{savingAlias ? "저장 중" : aliasDraft.trim() ? "별칭 저장" : "기본 호칭으로 초기화"}</button>
             <p id="alias-help">빈 값은 방문자님으로 초기화됩니다. 별칭은 로그인 상태나 권한을 바꾸지 않습니다.</p>
             <p id="alias-feedback" className={aliasFeedback?.error ? "field-error" : "field-success"} role="status">{aliasFeedback?.text}</p>
           </form>
