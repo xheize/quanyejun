@@ -181,7 +181,7 @@ export function Dashboard() {
       setCollections(current => ({ ...current, messages: upsert(current.messages, result.userMessage) }));
     } catch {
       if (!pendingRun.reset(request)) return;
-      setDraft(content);
+      setDraft(current => current || content);
       setNotice("런타임에 연결할 수 없습니다. 잠시 뒤 다시 시도해주세요.");
     }
   }

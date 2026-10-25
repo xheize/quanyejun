@@ -139,5 +139,13 @@ h1, h2, h3 { line-height: 1.35; overflow-wrap: anywhere; }
 @media (forced-colors: active) {
   .status-dot, .pulse-ring, .timeline-dot { background: CanvasText; }
   .brand-mark, .avatar, .message-bubble, .focus-card { border: 1px solid CanvasText; }
-  .x-progress { appearance: auto; }
+  /* Preserve track/fill contrast using the user's system palette. */
+  .x-progress {
+    forced-color-adjust: none;
+    background: Canvas;
+    border: 1px solid CanvasText;
+  }
+  .x-progress::-webkit-progress-bar { background: Canvas; }
+  .x-progress::-webkit-progress-value { background: Highlight; }
+  .x-progress::-moz-progress-bar { background: Highlight; }
 }
