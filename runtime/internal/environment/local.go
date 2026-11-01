@@ -315,6 +315,10 @@ func environmentWithOverrides(current []string, overrides map[string]string) []s
 			continue
 		}
 		name := entry[:separator]
+		// Server-only management credentials must not be inherited by tool processes.
+		if strings.EqualFold(name, "QUANYEJUN_TRANSFER_API_KEY") {
+			continue
+		}
 		if _, replaced := overrides[name]; replaced {
 			continue
 		}

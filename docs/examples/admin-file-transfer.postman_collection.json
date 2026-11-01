@@ -1,0 +1,47 @@
+{
+  "info": {
+    "name": "QuanYejun operator file transfer",
+    "description": "Server-side file ingress. Set local variables and select a file in each form-data body. No web session or CSRF header is needed. Never export real credentials.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [{ "key": "token", "value": "{{transfer_api_key}}", "type": "string" }]
+  },
+  "variable": [
+    { "key": "base_url", "value": "http://localhost:8080" },
+    { "key": "transfer_api_key", "value": "" },
+    { "key": "root", "value": "workspace" },
+    { "key": "file_path", "value": "imports/example.txt" },
+    { "key": "directory_path", "value": "imports/project-v1" }
+  ],
+  "item": [
+    {
+      "name": "Upload file (new destination)",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "url": "{{base_url}}/api/admin/files?root={{root}}&path={{file_path}}",
+        "body": { "mode": "formdata", "formdata": [{ "key": "file", "type": "file", "src": "" }] }
+      }
+    },
+    {
+      "name": "Replace regular file (explicit overwrite)",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "url": "{{base_url}}/api/admin/files?root={{root}}&path={{file_path}}&overwrite=true",
+        "body": { "mode": "formdata", "formdata": [{ "key": "file", "type": "file", "src": "" }] }
+      }
+    },
+    {
+      "name": "Upload directory as ZIP (new destination only)",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "url": "{{base_url}}/api/admin/files?root={{root}}&path={{directory_path}}&format=zip",
+        "body": { "mode": "formdata", "formdata": [{ "key": "file", "type": "file", "src": "" }] }
+      }
+    }
+  ]
+}

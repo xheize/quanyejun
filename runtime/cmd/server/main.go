@@ -23,6 +23,7 @@ import (
 	"github.com/quanyejun/quanyejun/runtime/internal/store"
 	"github.com/quanyejun/quanyejun/runtime/internal/tasks"
 	runtimetools "github.com/quanyejun/quanyejun/runtime/internal/tools"
+	"github.com/quanyejun/quanyejun/runtime/internal/transfer"
 )
 
 func main() {
@@ -72,6 +73,15 @@ func main() {
 	}
 	api := httpapi.New(dataStore, hub, provider, agentRunner, taskRunner, origins, displayName, executionEnvironment)
 	environmentInfo, _ := executionEnvironment.Inspect(ctx)
+	transfers, err := transfer.FromEnvironment(os.Getenv, environmentInfo.Paths.Workspace)
+	if err != nil {
+		slog.Error("file transfer configuration failed", "error", err)
+		os.Exit(1)
+	}
+	if transfers != nil {
+		defer transfers.Close()
+		api.SetTransfers(transfers)
+	}
 	authConfig, err := httpapi.AuthConfigFromEnvironment(filepath.Join(environmentInfo.Paths.Home, "session.key"))
 	if err != nil {
 		slog.Error("authentication configuration failed", "error", err)

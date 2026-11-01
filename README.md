@@ -127,6 +127,12 @@ go run ./cmd/server
 
 ## 실행 환경
 
+운영자는 웹 업로드 UI 없이 `POST /api/admin/files`로 파일과 ZIP 디렉터리를
+실행 환경에 전달할 수 있습니다. `QUANYEJUN_TRANSFER_API_KEY`를 설정하고
+Postman의 Bearer Token과 `form-data`의 `file` 필드로 전송합니다. 키가 없으면
+비활성화되며, 기본 목적지는 영속 workspace입니다. 설정·자격증명 등 별도
+위치는 서버의 허용 루트로 등록합니다. [설정과 Postman 사용법](docs/admin-file-transfer.md)을 참고하세요.
+
 Identity 코어는 LXC, Docker, Kubernetes API를 직접 호출하지 않습니다. 대신 `Environment` 인터페이스를 통해 영속 `home`, `workspace`, `config`, `cache`, 셸 실행, 도구 탐색을 사용합니다. 현재 구현은 같은 OS에서 실행하는 `local` 어댑터이며, LXC 안에서 실행할 때도 동일한 코드를 쓰고 환경 변수로 `kind=lxc`와 영속 경로를 지정합니다.
 
 도구의 설치 여부인 capability와 실제 사용 허가인 authority는 분리되어 있습니다. `QUANYEJUN_ENVIRONMENT_ALLOW`에 `shell`이 포함된 환경에서는 모델에 `environment_inspect`와 `environment_exec`가 노출됩니다. 모델은 설치된 CLI를 탐색하고, 게스트 OS 권한이 허용하면 `apt`, `npm`, `pip` 같은 패키지 관리자를 사용하며, 명령을 워크스페이스 또는 격리된 임시 디렉터리에서 실행할 수 있습니다. 명령은 executable과 args를 분리해 전달하고, 셸 문법이 필요할 때만 `sh -lc`나 `pwsh -Command`를 명시적으로 실행합니다.

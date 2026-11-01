@@ -20,6 +20,7 @@ import (
 	"github.com/quanyejun/quanyejun/runtime/internal/llm"
 	"github.com/quanyejun/quanyejun/runtime/internal/store"
 	"github.com/quanyejun/quanyejun/runtime/internal/tasks"
+	"github.com/quanyejun/quanyejun/runtime/internal/transfer"
 )
 
 type Server struct {
@@ -33,6 +34,7 @@ type Server struct {
 	displayName    string
 	environment    environment.Environment
 	allowedOrigins map[string]struct{}
+	transfers      *transfer.Service
 }
 
 func New(store store.Store, hub *eventhub.Hub, provider llm.Provider, agentRunner *agent.Runner, taskRunner *tasks.Runner, origins []string, displayName string, executionEnvironment environment.Environment) *Server {
@@ -62,13 +64,17 @@ func (s *Server) Handler() http.Handler {
 	if err := router.SetTrustedProxies(proxies); err != nil {
 		panic("invalid TRUSTED_PROXIES")
 	}
-	router.Use(gin.Recovery(), s.cors(), s.limitIP)
+	router.Use(gin.Recovery())
 	// Do not log callback codes, cookies, or anonymous request contents.
 	router.Use(func(c *gin.Context) {
 		c.Header("Cache-Control", "no-store")
 		c.Header("Referrer-Policy", "no-referrer")
 		c.Next()
 	})
+	// Management requests use bearer authentication, never browser sessions or
+	// the chat CSRF middleware. Register before adding browser middleware.
+	router.POST("/api/admin/files", s.uploadFile)
+	router.Use(s.cors(), s.limitIP)
 	router.GET("/auth/login", s.auth.login)
 	router.GET("/auth/callback", s.auth.callback)
 	router.POST("/auth/logout", s.auth.logout)
