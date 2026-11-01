@@ -104,6 +104,29 @@ docker compose up --build
 
 PostgreSQL, Identity workspace, cache, 관리자 설정은 각각 Docker volume에 유지됩니다. `quanyejun-config` volume은 최초 생성 시 비활성화된 MCP 예제로 초기화되며, 실제 연결을 사용할 때 `/etc/quanyejun/mcp-servers.json`과 `/etc/quanyejun/mcp-authority.json`을 관리자가 수정하면 됩니다. `.dockerignore`는 로컬 의존성, 빌드 결과, 런타임 데이터, 비밀 설정을 빌드 컨텍스트에서 제외합니다.
 
+## 태그 이미지 발행
+
+Woodpecker의 `.woodpecker/release.yaml`은 `v*` 태그 push에서 실행되며,
+`v0.0.2`, `v0.0.2-rc.1` 형식의 버전만 허용합니다. 프런트 lint·타입 검사·테스트가
+성공한 뒤 기존 클러스터 BuildKit으로 다음 `linux/amd64` 이미지를 빌드·발행합니다.
+
+- `registry.xheize.cc/quanyejun-backend:<태그>`
+- `registry.xheize.cc/quanyejun-frontend:<태그>`
+
+프런트의 `NEXT_PUBLIC_RUNTIME_URL`은 `https://ask.xheize.cc`입니다.
+주소를 바꾸려면 release workflow의 값을 수정하고 새 버전으로 빌드해야 합니다.
+배포 시 해당 호스트의 API·WebSocket·인증 경로를 런타임에 연결해야 합니다.
+레지스트리 인증은 k3s-ops의 Woodpecker Pod 정책이 주입하는 `/docker/config.json`을
+사용하며, 인증 파일이 없으면 발행 전에 실패합니다. 비공개 디자인 참조는 clone하지
+않으며 Docker 빌드 컨텍스트에서도 제외합니다.
+
+CI 설정이 포함된 커밋에 새 태그를 붙여 push하세요. 기존 `v0.0.1`은 CI 추가 전
+커밋을 가리키므로 이 workflow를 포함하지 않습니다. 발행된 버전 태그는 이동하지
+않고 후속 버전을 사용합니다. 두 이미지 발행은 순차 실행이므로 실패 시 일부만
+발행됐을 수 있습니다. 둘 다 성공했는지 확인한 뒤 각 digest로 배포합니다.
+`latest` 갱신과 K3s 배포는 수행하지 않습니다. 배포 정의는 k3s-ops에서 관리하며,
+현재 이미지는 `kubernetes.io/arch: amd64` 노드에 배치해야 합니다.
+
 ## SSO 로그인과 익명 방문자
 
 로그인하지 않아도 서버가 발급한 쿠키로 같은 브라우저의 대화를 이어갑니다. 익명 기록은 **각 생성 시점부터 최대 72시간**만 조회할 수 있으며, 접속을 계속해도 만료가 연장되지 않습니다. 파생 답변·기억·실행 결과는 원본의 가장 이른 만료를 이어받고, 만료 행은 서버 시작 및 30초 간격 정리 작업으로 삭제합니다.

@@ -1,0 +1,25 @@
+# Publish version tags only; deployment remains in k3s-ops.
+when:
+  - event: tag
+    ref: refs/tags/v*
+
+depends_on: [frontend]
+
+clone:
+  - name: git
+    image: woodpeckerci/plugin-git:2.10.1
+    settings:
+      recursive: false
+
+steps:
+  - name: publish-images
+    image: moby/buildkit:v0.31.0
+    environment:
+      BUILDKIT_HOST: tcp://buildkit.buildkit.svc.cluster.local:2395
+      # k3s-ops injects the registry credentials into Woodpecker Pods.
+      DOCKER_CONFIG: /docker
+      # Avoid buildctl v0.31.0's short optional trace shutdown timeout.
+      OTEL_TRACES_SAMPLER: always_off
+      NEXT_PUBLIC_RUNTIME_URL: https://ask.xheize.cc
+    commands:
+      - sh scripts/ci/publish-images.sh

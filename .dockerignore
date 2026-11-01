@@ -1,4 +1,8 @@
 .git
+**/.git
+.agents
+.codex
+references
 .gitignore
 .gitattributes
 frontend
@@ -8,6 +12,19 @@ frontend
 !.env.example
 *.pem
 *.key
+**/*.pem
+**/*.key
+**/*.p12
+**/*.pfx
+**/id_rsa
+**/id_ed25519
+**/.aws
+**/.ssh
+**/.env
+**/.env.*
+**/*.dump
+**/*.backup
+**/*.bak
 
 node_modules
 **/node_modules

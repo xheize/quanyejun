@@ -1,6 +1,6 @@
 # Frontend checks only; no backend services or deployment credentials.
 when:
-  - event: [push, pull_request, manual]
+  - event: [push, pull_request, manual, tag]
 
 clone:
   - name: git
